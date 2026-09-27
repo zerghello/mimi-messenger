@@ -24,3 +24,6 @@ Setup:
 3. Do NOT replace config.js.
 4. Have each test account log in once after deployment so its public E2EE key is registered.
 5. Test a new text message and a new photo between two accounts.
+
+
+MiMi Messenger v5.2: fixed Supabase password-recovery flow. The recovery link is captured before Supabase cleans the URL fragment, and the app stays on the password reset screen until the recovery session is ready.

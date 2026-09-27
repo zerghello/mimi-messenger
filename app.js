@@ -1,5 +1,12 @@
 const { createClient } = supabase;
 
+// Capture the recovery link BEFORE Supabase can process/clean the URL hash.
+const RECOVERY_LINK_AT_LOAD = (() => {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const query = new URLSearchParams(window.location.search);
+  return hash.get("type") === "recovery" || query.get("type") === "recovery";
+})();
+
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
 const $ = id => document.getElementById(id);
@@ -13,7 +20,8 @@ const E2EE_PREFIX = "E2EE1:";
 const IDB_NAME = "mimi-e2ee";
 const IDB_STORE = "identity";
 let identity = null;
-let passwordRecoveryMode = false;
+let passwordRecoveryMode = RECOVERY_LINK_AT_LOAD;
+let recoverySessionReady = false;
 
 let notificationPermission = (typeof Notification !== "undefined") ? Notification.permission : "unsupported";
 let unreadTotal = 0;
@@ -241,12 +249,13 @@ function updatePageTitle() { document.title = unreadTotal ? `(${unreadTotal}) Mi
 function clearUnread() { unreadTotal = 0; updatePageTitle(); }
 
 function isPasswordRecoveryUrl() {
+  if (RECOVERY_LINK_AT_LOAD) return true;
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const query = new URLSearchParams(window.location.search);
   return hash.get("type") === "recovery" || query.get("type") === "recovery";
 }
 
-function showResetPanel() {
+function showResetPanel(waitingForSession = false) {
   passwordRecoveryMode = true;
   currentUser = null; selectedUser = null; identity = null;
   $("app").classList.add("hidden");
@@ -258,11 +267,15 @@ function showResetPanel() {
   $("login").classList.add("hidden");
   $("forgotPassword").classList.add("hidden");
   $("resetPanel").classList.remove("hidden");
-  $("authMsg").textContent = "Установи новый пароль для аккаунта.";
+  $("savePassword").disabled = waitingForSession || !recoverySessionReady;
+  $("authMsg").textContent = waitingForSession
+    ? "Подготавливаем восстановление пароля…"
+    : "Установи новый пароль для аккаунта.";
 }
 
 function showNormalAuth() {
   passwordRecoveryMode = false;
+  recoverySessionReady = false;
   $("email").classList.remove("hidden");
   $("password").classList.remove("hidden");
   $("username").classList.remove("hidden");
@@ -275,23 +288,43 @@ function showNormalAuth() {
 async function init() {
   updateNotifyUI();
 
+  // Supabase may remove #type=recovery while establishing the recovery session.
+  if (RECOVERY_LINK_AT_LOAD) showResetPanel(true);
+
   db.auth.onAuthStateChange(async (event, session) => {
     if (event === "PASSWORD_RECOVERY") {
-      showResetPanel();
+      recoverySessionReady = !!session;
+      showResetPanel(false);
       return;
     }
-    if (session && !passwordRecoveryMode) await enterApp(session.user);
-    else if (!session && !passwordRecoveryMode) { showNormalAuth(); showAuth(); }
+
+    if (RECOVERY_LINK_AT_LOAD || passwordRecoveryMode) {
+      if (session) {
+        recoverySessionReady = true;
+        showResetPanel(false);
+      }
+      return;
+    }
+
+    if (session) await enterApp(session.user);
+    else { showNormalAuth(); showAuth(); }
   });
 
   const { data, error } = await db.auth.getSession();
   if (error) console.error(error);
 
-  if (isPasswordRecoveryUrl()) {
-    showResetPanel();
-  } else if (data.session) {
-    await enterApp(data.session.user);
-  } else {
+  if (RECOVERY_LINK_AT_LOAD || isPasswordRecoveryUrl()) {
+    if (data.session) {
+      recoverySessionReady = true;
+      showResetPanel(false);
+    } else {
+      showResetPanel(true);
+    }
+    return;
+  }
+
+  if (data.session) await enterApp(data.session.user);
+  else {
     showNormalAuth();
     showAuth();
   }
@@ -508,25 +541,31 @@ $("forgotPassword").onclick = async () => {
 $("savePassword").onclick = async () => {
   const p1 = $("newPassword").value;
   const p2 = $("newPassword2").value;
+  if (!recoverySessionReady) {
+    $("authMsg").textContent = "Ссылка восстановления ещё не активировалась. Подожди несколько секунд и попробуй снова.";
+    return;
+  }
   if (p1.length < 6) { $("authMsg").textContent = "Пароль должен содержать минимум 6 символов."; return; }
   if (p1 !== p2) { $("authMsg").textContent = "Пароли не совпадают."; return; }
 
   $("savePassword").disabled = true;
-  $("authMsg").textContent = "Изменяю пароль...";
   try {
     const { error } = await db.auth.updateUser({ password: p1 });
     if (error) throw error;
-    $("authMsg").textContent = "Пароль изменён. Входим...";
+
     $("newPassword").value = "";
     $("newPassword2").value = "";
-    const { data } = await db.auth.getUser();
+    passwordRecoveryMode = false;
+    recoverySessionReady = false;
+    await db.auth.signOut();
     showNormalAuth();
-    if (data?.user) await enterApp(data.user);
+    showAuth();
+    $("authMsg").textContent = "✅ Пароль изменён. Войди с новым паролем.";
   } catch (e) {
     console.error(e);
-    $("authMsg").textContent = "Не удалось изменить пароль: " + e.message;
+    $("authMsg").textContent = "Не удалось изменить пароль: " + (e.message || e);
   } finally {
-    $("savePassword").disabled = false;
+    if (passwordRecoveryMode) $("savePassword").disabled = false;
   }
 };
 
