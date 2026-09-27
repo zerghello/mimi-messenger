@@ -232,7 +232,34 @@ async function fingerprintForPublicKey(publicKeyText) {
   return hex.match(/.{1,4}/g).join(" ");
 }
 
-async function showKeyFingerprint(user) {
+
+async function getDeviceFingerprintSet(userId) {
+  const devices = await getActiveDevices(userId);
+  const result = [];
+  for (const device of devices) result.push({ id: device.id, fingerprint: await fingerprintForPublicKey(device.public_key) });
+  result.sort((a, b) => a.id.localeCompare(b.id));
+  return result;
+}
+function keySetStorageKey(userId) { return "mimi-keyset:" + userId; }
+async function checkKeyChange(user) {
+  if (!user?.id) return { changed: false, current: [] };
+  const current = await getDeviceFingerprintSet(user.id);
+  const key = keySetStorageKey(user.id);
+  let previous = null; try { previous = JSON.parse(localStorage.getItem(key) || "null"); } catch (_) {}
+  if (!previous) { localStorage.setItem(key, JSON.stringify(current)); return { changed: false, current }; }
+  const oldIds = previous.map(x => x.id).sort(), newIds = current.map(x => x.id).sort();
+  const changed = oldIds.length !== newIds.length || oldIds.some((id, i) => id !== newIds[i]) || previous.some(old => { const now = current.find(x => x.id === old.id); return now && now.fingerprint !== old.fingerprint; });
+  return { changed, current, previous };
+}
+function rememberCurrentKeySet(userId, current) { localStorage.setItem(keySetStorageKey(userId), JSON.stringify(current)); }
+async function updateKeyWarning(user) {
+  const result = await checkKeyChange(user); const warning = $("keyWarning"); if (!warning) return result;
+  if (result.changed) { warning.classList.remove("hidden"); warning.textContent = "⚠️"; warning.title = "Ключ безопасности изменился. Нажмите для проверки."; warning.onclick = () => showKeyFingerprint(user, result); }
+  else warning.classList.add("hidden");
+  return result;
+}
+
+async function showKeyFingerprint(user, changeResult = null) {
   if (!user) return;
   const old = document.getElementById("fingerprintModal");
   if (old) old.remove();
@@ -244,12 +271,14 @@ async function showKeyFingerprint(user) {
     <div class="fingerprintCard">
       <h2>🔐 Проверка E2EE</h2>
       <p>Отпечаток ключа пользователя <strong>${escapeHtml(user.username)}</strong></p>
-      <p class="muted small">Сравни этот отпечаток с отпечатком, показанным у этого человека на другом доверенном канале. Если отпечатки совпадают — ключ можно считать проверенным.</p>
+      ${changeResult?.changed ? '<div class="keyChangeAlert">⚠️ Ключ безопасности изменился с момента последней проверки. Новый браузер/устройство может быть нормальной причиной, но перед продолжением переписки проверь отпечаток через доверенный канал.</div>' : ''}
+      <p class="muted small">Сравни отпечаток с отпечатком, показанным у этого человека через другой доверенный канал. Совпадение отпечатка помогает обнаружить подмену ключа.</p>
       <div id="fingerprintList" class="fingerprintList"><div class="muted">Загрузка...</div></div>
-      <button id="closeFingerprint" type="button" class="secondary">Закрыть</button>
+      <button id="confirmFingerprint" type="button">Подтвердить текущие ключи</button><button id="closeFingerprint" type="button" class="secondary">Закрыть</button>
     </div>`;
   document.body.appendChild(modal);
   $("closeFingerprint").onclick = () => modal.remove();
+  $("confirmFingerprint").onclick = async () => { try { const current = await getDeviceFingerprintSet(user.id); rememberCurrentKeySet(user.id, current); const warning = $("keyWarning"); if (warning) warning.classList.add("hidden"); modal.remove(); } catch (e) { alert("Не удалось сохранить проверку ключей: " + (e.message || e)); } };
   modal.onclick = e => { if (e.target === modal) modal.remove(); };
 
   try {
@@ -474,8 +503,9 @@ $("search").addEventListener("input", e => {
 async function selectUser(user) {
   selectedUser = user;
   clearUnread();
-  $("chatHeader").innerHTML = `<span>${escapeHtml(user.username)}</span><button id="fingerprintBtn" type="button" class="fingerprintBtn" title="Проверить отпечаток E2EE">🔐</button>`;
+  $("chatHeader").innerHTML = `<span>${escapeHtml(user.username)}</span><button id="keyWarning" type="button" class="keyWarning hidden" title="Ключ безопасности изменился">⚠️</button><button id="fingerprintBtn" type="button" class="fingerprintBtn" title="Проверить отпечаток E2EE">🔐</button>`;
   $("fingerprintBtn").onclick = () => showKeyFingerprint(user);
+  try { await updateKeyWarning(user); } catch (e) { console.warn("E2EE key check failed", e); }
   $("sendForm").classList.remove("hidden"); renderUsers(allUsers);
   await loadMessages(); subscribeToMessages();
 }
