@@ -219,6 +219,60 @@ async function decryptFileForMessage(m) {
   return new Blob([plain], { type: m.image_mime || "image/jpeg" });
 }
 
+
+function canonicalJwk(jwk) {
+  const k = typeof jwk === "string" ? JSON.parse(jwk) : jwk;
+  return JSON.stringify({ kty: k.kty, crv: k.crv, x: k.x, y: k.y });
+}
+
+async function fingerprintForPublicKey(publicKeyText) {
+  const bytes = new TextEncoder().encode(canonicalJwk(publicKeyText));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+  return hex.match(/.{1,4}/g).join(" ");
+}
+
+async function showKeyFingerprint(user) {
+  if (!user) return;
+  const old = document.getElementById("fingerprintModal");
+  if (old) old.remove();
+
+  const modal = document.createElement("div");
+  modal.id = "fingerprintModal";
+  modal.className = "fingerprintOverlay";
+  modal.innerHTML = `
+    <div class="fingerprintCard">
+      <h2>🔐 Проверка E2EE</h2>
+      <p>Отпечаток ключа пользователя <strong>${escapeHtml(user.username)}</strong></p>
+      <p class="muted small">Сравни этот отпечаток с отпечатком, показанным у этого человека на другом доверенном канале. Если отпечатки совпадают — ключ можно считать проверенным.</p>
+      <div id="fingerprintList" class="fingerprintList"><div class="muted">Загрузка...</div></div>
+      <button id="closeFingerprint" type="button" class="secondary">Закрыть</button>
+    </div>`;
+  document.body.appendChild(modal);
+  $("closeFingerprint").onclick = () => modal.remove();
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+
+  try {
+    const devices = await getActiveDevices(user.id);
+    const list = $("fingerprintList");
+    if (!devices.length) {
+      list.innerHTML = '<div class="muted">У пользователя пока нет активного E2EE-устройства.</div>';
+      return;
+    }
+    list.innerHTML = "";
+    for (let i = 0; i < devices.length; i++) {
+      const fp = await fingerprintForPublicKey(devices[i].public_key);
+      const item = document.createElement("div");
+      item.className = "fingerprintItem";
+      item.innerHTML = `<div class="small muted">Устройство ${i + 1}</div><code>${escapeHtml(fp)}</code>`;
+      list.appendChild(item);
+    }
+  } catch (e) {
+    console.error(e);
+    $("fingerprintList").innerHTML = '<div class="muted">Не удалось получить отпечаток ключа.</div>';
+  }
+}
+
 function updateNotifyUI() {
   const btn = $("notifyBtn");
   const status = $("notifyStatus");
@@ -419,7 +473,9 @@ $("search").addEventListener("input", e => {
 
 async function selectUser(user) {
   selectedUser = user;
-  clearUnread(); $("chatHeader").textContent = user.username;
+  clearUnread();
+  $("chatHeader").innerHTML = `<span>${escapeHtml(user.username)}</span><button id="fingerprintBtn" type="button" class="fingerprintBtn" title="Проверить отпечаток E2EE">🔐</button>`;
+  $("fingerprintBtn").onclick = () => showKeyFingerprint(user);
   $("sendForm").classList.remove("hidden"); renderUsers(allUsers);
   await loadMessages(); subscribeToMessages();
 }
