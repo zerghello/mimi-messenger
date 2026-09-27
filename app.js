@@ -9,7 +9,7 @@ const RECOVERY_LINK_AT_LOAD = (() => {
 
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
-const APP_VERSION = "5.7.2";
+const APP_VERSION = "5.7.3";
 const $ = id => document.getElementById(id);
 function setDebugStatus(message) {
   const el = $("debugStatus");
@@ -21,6 +21,8 @@ let realtimeChannel = null;
 let allUsers = [];
 let selectedPhoto = null;
 let selectedAvatarFile = null;
+let selectedAvatarBuffer = null;
+let selectedAvatarType = "image/jpeg";
 const PHOTO_BUCKET = "chat-images";
 const AVATAR_BUCKET = "profile-avatars";
 const E2EE_PREFIX = "E2EE1:";
@@ -587,54 +589,69 @@ $("avatarPickBtn").addEventListener("click", () => {
   if (input) input.click();
 });
 
-$("avatarInput").addEventListener("change", e => {
+$("avatarInput").addEventListener("change", async e => {
   const file = e.target.files?.[0];
   if (!file) return;
 
+  selectedAvatarFile = null;
+  selectedAvatarBuffer = null;
+
   if (!file.type || !file.type.startsWith("image/")) {
-    selectedAvatarFile = null;
     e.target.value = "";
     $("profileMsg").textContent = "Выбери изображение JPG, PNG или WebP.";
     return;
   }
 
   if (file.size > 5 * 1024 * 1024) {
-    selectedAvatarFile = null;
     e.target.value = "";
     $("profileMsg").textContent = "Аватар слишком большой. Максимум 5 МБ.";
     return;
   }
 
-  // ВАЖНО: здесь больше НЕ пытаемся открыть/декодировать картинку.
-  // Android/Samsung Internet иногда ломает локальный preview через blob URL.
-  // Файл сохраняем напрямую и отдаём Supabase при нажатии «Сохранить».
-  selectedAvatarFile = file;
-  const mb = (file.size / 1024 / 1024).toFixed(2);
-  $("profileAvatar").innerHTML = `<div class="avatarSelectedIcon">📷</div>`;
-  $("profileMsg").textContent = `Фото выбрано: ${file.name} (${mb} МБ). Нажми «Сохранить».`;
+  // ВАЖНО ДЛЯ ANDROID:
+  // Android/Samsung Internet иногда даёт File только временный доступ.
+  // Поэтому копируем содержимое файла СРАЗУ в память в момент выбора.
+  // При нажатии «Сохранить» исходный File уже не используется.
+  try {
+    const buffer = await file.arrayBuffer();
+    selectedAvatarBuffer = buffer;
+    selectedAvatarType = file.type || "image/jpeg";
+    const mb = (file.size / 1024 / 1024).toFixed(2);
+    $("profileAvatar").innerHTML = `<div class="avatarSelectedIcon">📷</div>`;
+    $("profileMsg").textContent = `Фото выбрано: ${file.name} (${mb} МБ). Нажми «Сохранить».`;
+  } catch (err) {
+    console.error("Avatar read failed:", err);
+    e.target.value = "";
+    $("profileMsg").textContent = "Не удалось прочитать выбранное фото. Попробуй выбрать его ещё раз.";
+  }
 });
 
 $("saveProfile").addEventListener("click", async () => {
   const username = $("profileUsername").value.trim();
-  const file = selectedAvatarFile || $("avatarInput").files?.[0] || null;
+  const hasAvatar = !!selectedAvatarBuffer;
   if (username.length < 3 || username.length > 30) {
     $("profileMsg").textContent = "Имя должно содержать от 3 до 30 символов.";
     return;
   }
   $("saveProfile").disabled = true;
-  $("profileMsg").textContent = file ? "Загружаю фото..." : "Сохраняю...";
+  $("profileMsg").textContent = hasAvatar ? "Загружаю фото..." : "Сохраняю...";
   try {
     const { data: old, error: oldErr } = await db.from("profiles").select("avatar_path").eq("id", currentUser.id).maybeSingle();
     if (oldErr) throw oldErr;
     let avatarPath = old?.avatar_path || null;
-    if (file) {
-      // Android/Samsung Internet can expose camera/gallery files with a fragile File/Blob stream.
-      // Normalize supported images to a small JPEG Blob before sending to Supabase Storage.
-      let uploadBody = file;
-      let uploadType = file.type || "image/jpeg";
-      let uploadExt = "jpg";
+    if (hasAvatar) {
+      avatarPath = `${currentUser.id}/${crypto.randomUUID()}.jpg`;
+
+      // Используем уже прочитанный в момент выбора ArrayBuffer.
+      // Это обход Android-ошибки "requested file could not be read".
+      let bodyBuffer = selectedAvatarBuffer;
+      let uploadType = selectedAvatarType || "image/jpeg";
+
+      // Если браузер умеет декодировать изображение, уменьшаем его до 640px.
+      // Работаем уже с Blob из памяти, а не с исходным File.
       try {
-        const bitmap = await createImageBitmap(file);
+        const sourceBlob = new Blob([bodyBuffer], { type: uploadType });
+        const bitmap = await createImageBitmap(sourceBlob);
         const maxSide = 640;
         const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
         const canvas = document.createElement("canvas");
@@ -643,22 +660,17 @@ $("saveProfile").addEventListener("click", async () => {
         const ctx = canvas.getContext("2d", { alpha: false });
         ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
         bitmap.close?.();
-        uploadBody = await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error("Не удалось подготовить изображение")), "image/jpeg", 0.86));
+        const jpeg = await new Promise((resolve, reject) =>
+          canvas.toBlob(b => b ? resolve(b) : reject(new Error("Не удалось подготовить изображение")), "image/jpeg", 0.86)
+        );
+        bodyBuffer = await jpeg.arrayBuffer();
         uploadType = "image/jpeg";
       } catch (normalizeErr) {
         console.warn("Avatar normalization skipped:", normalizeErr);
       }
-      avatarPath = `${currentUser.id}/${crypto.randomUUID()}.jpg`;
 
-      // Надёжная загрузка для Android/Samsung Internet:
-      // сначала превращаем тело в ArrayBuffer, затем пробуем обычный Supabase SDK.
-      // Если браузер возвращает сетевое "Failed to fetch", используем прямой REST fallback
-      // с текущим access token. Это помогает отличить реальную ошибку Storage от проблемы fetch.
       let uploadError = null;
       try {
-        const bodyBuffer = uploadBody instanceof ArrayBuffer
-          ? uploadBody
-          : await uploadBody.arrayBuffer();
         const result = await db.storage.from(AVATAR_BUCKET).upload(avatarPath, bodyBuffer, {
           contentType: uploadType,
           cacheControl: "3600",
@@ -672,16 +684,11 @@ $("saveProfile").addEventListener("click", async () => {
       if (uploadError) {
         const msg = uploadError.message || String(uploadError) || "Ошибка Storage";
         console.warn("Avatar SDK upload failed, trying REST fallback:", uploadError);
-
         try {
           const { data: sessionData, error: sessionErr } = await db.auth.getSession();
           if (sessionErr) throw sessionErr;
           const accessToken = sessionData?.session?.access_token;
           if (!accessToken) throw new Error("Нет активной сессии авторизации.");
-
-          const bodyBuffer = uploadBody instanceof ArrayBuffer
-            ? uploadBody
-            : await uploadBody.arrayBuffer();
           const encodedPath = avatarPath.split("/").map(encodeURIComponent).join("/");
           const endpoint = `${window.SUPABASE_URL}/storage/v1/object/${AVATAR_BUCKET}/${encodedPath}`;
           const response = await fetch(endpoint, {
@@ -695,7 +702,6 @@ $("saveProfile").addEventListener("click", async () => {
             },
             body: bodyBuffer
           });
-
           if (!response.ok) {
             let detail = "";
             try { detail = (await response.text()).slice(0, 500); } catch (_) {}
@@ -714,6 +720,7 @@ $("saveProfile").addEventListener("click", async () => {
     await setAvatarElement($("myAvatar"), username, avatarPath);
     $("profileMsg").textContent = "✅ Профиль сохранён";
     selectedAvatarFile = null;
+    selectedAvatarBuffer = null;
     $("avatarInput").value = "";
     await loadUsers();
     setTimeout(() => $("profileOverlay").classList.add("hidden"), 700);
