@@ -17,6 +17,7 @@ let allUsers = [];
 let selectedPhoto = null;
 const PHOTO_BUCKET = "chat-images";
 const E2EE_PREFIX = "E2EE1:";
+const E2EE2_PREFIX = "E2EE2:";
 const IDB_NAME = "mimi-e2ee";
 const IDB_STORE = "identity";
 let identity = null;
@@ -46,13 +47,15 @@ function text(bytes) { return new TextDecoder().decode(bytes); }
 
 function openIdentityDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+    const req = indexedDB.open(IDB_NAME, 2);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      if (!d.objectStoreNames.contains(IDB_STORE)) d.createObjectStore(IDB_STORE);
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
-
 async function idbGet(key) {
   const dbx = await openIdentityDB();
   return new Promise((resolve, reject) => {
@@ -62,7 +65,6 @@ async function idbGet(key) {
     req.onerror = () => reject(req.error);
   });
 }
-
 async function idbPut(key, value) {
   const dbx = await openIdentityDB();
   return new Promise((resolve, reject) => {
@@ -72,109 +74,149 @@ async function idbPut(key, value) {
     tx.onerror = () => reject(tx.error);
   });
 }
-
 async function generateIdentity() {
-  const generated = await crypto.subtle.generateKey(
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveKey"]
-  );
+  const generated = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
   const publicJwk = await crypto.subtle.exportKey("jwk", generated.publicKey);
   const privateJwk = await crypto.subtle.exportKey("jwk", generated.privateKey);
-  const privateKey = await crypto.subtle.importKey(
-    "jwk", privateJwk,
-    { name: "ECDH", namedCurve: "P-256" },
-    false, ["deriveKey"]
-  );
+  const privateKey = await crypto.subtle.importKey("jwk", privateJwk, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveKey"]);
   return { privateKey, publicJwk };
 }
-
 async function ensureIdentity() {
+  if (!currentUser) throw new Error("Нет авторизованного пользователя.");
   if (identity) return identity;
-
-  let saved = await idbGet("identity");
+  const keyName = "identity:" + currentUser.id;
+  let saved = await idbGet(keyName);
   if (!saved || !saved.privateKey || !saved.publicJwk) {
     saved = await generateIdentity();
-    await idbPut("identity", saved);
+    await idbPut(keyName, saved);
   }
-
   identity = saved;
   const publicKeyText = JSON.stringify(identity.publicJwk);
-
-  const { data: profile, error: profileError } = await db.from("profiles")
-    .select("id,e2ee_public_key")
-    .eq("id", currentUser.id)
-    .maybeSingle();
-
+  const { data: profile, error: profileError } = await db.from("profiles").select("id,e2ee_public_key").eq("id", currentUser.id).maybeSingle();
   if (profileError) throw new Error("Не удалось проверить E2EE-ключ: " + profileError.message);
-
-  if (profile?.e2ee_public_key !== publicKeyText) {
-    const { error } = await db.from("profiles")
-      .update({ e2ee_public_key: publicKeyText })
-      .eq("id", currentUser.id);
+  // Legacy profile key is kept stable. Never overwrite it from another browser.
+  if (!profile?.e2ee_public_key) {
+    const { error } = await db.from("profiles").update({ e2ee_public_key: publicKeyText }).eq("id", currentUser.id);
     if (error) throw new Error("Не удалось сохранить E2EE-ключ: " + error.message);
   }
-
   return identity;
 }
-
-async function importPublicKey(user) {
-  if (!user?.e2ee_public_key) throw new Error("У этого пользователя ещё не создан E2EE-ключ. Пусть он войдёт в MiMi Messenger один раз.");
-  const jwk = JSON.parse(user.e2ee_public_key);
-  return crypto.subtle.importKey(
-    "jwk", jwk,
-    { name: "ECDH", namedCurve: "P-256" },
-    false, []
-  );
+async function importPublicKeyJwk(jwk) {
+  return crypto.subtle.importKey("jwk", jwk, { name: "ECDH", namedCurve: "P-256" }, false, []);
 }
-
-async function getChatKey(user) {
+async function getLegacyChatKey(user) {
   await ensureIdentity();
-  const publicKey = await importPublicKey(user);
-  return crypto.subtle.deriveKey(
-    { name: "ECDH", public: publicKey },
-    identity.privateKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"]
-  );
+  if (!user?.e2ee_public_key) throw new Error("У этого пользователя ещё нет старого E2EE-ключа.");
+  const publicKey = await importPublicKeyJwk(JSON.parse(user.e2ee_public_key));
+  return crypto.subtle.deriveKey({ name: "ECDH", public: publicKey }, identity.privateKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
-
-async function encryptText(plain, user) {
-  const key = await getChatKey(user);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const cipher = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv }, key, utf8(plain)
-  );
-  return E2EE_PREFIX + JSON.stringify({ v: 1, iv: b64(iv), ct: b64(cipher) });
+async function ensureDevice() {
+  await ensureIdentity();
+  const key = "deviceId:" + currentUser.id;
+  let deviceId = await idbGet(key);
+  if (!deviceId) {
+    deviceId = crypto.randomUUID();
+    await idbPut(key, deviceId);
+  }
+  const publicKey = JSON.stringify(identity.publicJwk);
+  const { data: existing, error: readErr } = await db.from("e2ee_devices").select("id,public_key,revoked_at").eq("id", deviceId).maybeSingle();
+  if (readErr) throw new Error("Не удалось проверить E2EE-устройство: " + readErr.message);
+  if (!existing) {
+    const { error } = await db.from("e2ee_devices").insert({ id: deviceId, user_id: currentUser.id, public_key: publicKey });
+    if (error) throw new Error("Не удалось зарегистрировать E2EE-устройство: " + error.message);
+  } else if (existing.public_key !== publicKey || existing.revoked_at) {
+    deviceId = crypto.randomUUID();
+    await idbPut(key, deviceId);
+    const { error } = await db.from("e2ee_devices").insert({ id: deviceId, user_id: currentUser.id, public_key: publicKey });
+    if (error) throw new Error("Не удалось зарегистрировать новое E2EE-устройство: " + error.message);
+  }
+  return deviceId;
 }
-
-function isEncryptedBody(body) {
-  return typeof body === "string" && body.startsWith(E2EE_PREFIX);
+async function getActiveDevices(userId) {
+  const { data, error } = await db.from("e2ee_devices").select("id,user_id,public_key").eq("user_id", userId).is("revoked_at", null);
+  if (error) throw error;
+  return data || [];
 }
-
-async function decryptText(body, user) {
-  if (!isEncryptedBody(body)) return body || "";
-  const packet = JSON.parse(body.slice(E2EE_PREFIX.length));
-  const key = await getChatKey(user);
-  const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: unb64(packet.iv) }, key, unb64(packet.ct)
-  );
+async function deriveWrapKey(myPrivateKey, theirPublicJwk) {
+  const pub = await importPublicKeyJwk(JSON.parse(theirPublicJwk));
+  return crypto.subtle.deriveKey({ name: "ECDH", public: pub }, myPrivateKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function makeMessageKeyPacket(messageKey) {
+  const myDeviceId = await ensureDevice();
+  const recipientDevices = await getActiveDevices(selectedUser.id);
+  const myDevices = await getActiveDevices(currentUser.id);
+  const all = [...myDevices, ...recipientDevices].filter((d, i, a) => a.findIndex(x => x.id === d.id) === i);
+  if (!all.length) throw new Error("Не найдено E2EE-устройство получателя.");
+  const rawMessageKey = await crypto.subtle.exportKey("raw", messageKey);
+  const wraps = [];
+  for (const device of all) {
+    const wrapKey = await deriveWrapKey(identity.privateKey, device.public_key);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const wrapped = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, wrapKey, rawMessageKey);
+    wraps.push({ deviceId: device.id, senderDeviceId: myDeviceId, iv: b64(iv), wrapped: b64(wrapped) });
+  }
+  return { wraps, senderDeviceId: myDeviceId };
+}
+async function decryptMessageKey(packet) {
+  const myDeviceId = await ensureDevice();
+  const wrap = packet.wraps?.find(x => x.deviceId === myDeviceId);
+  if (!wrap) throw new Error("Для этого устройства нет ключа сообщения.");
+  const { data: senderDevice, error } = await db.from("e2ee_devices").select("public_key").eq("id", wrap.senderDeviceId).maybeSingle();
+  if (error || !senderDevice) throw new Error("Не найден ключ устройства отправителя.");
+  const wrapKey = await deriveWrapKey(identity.privateKey, senderDevice.public_key);
+  const raw = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(wrap.iv) }, wrapKey, unb64(wrap.wrapped));
+  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+async function encryptE2EE2(plainText, file) {
+  await ensureIdentity(); await ensureDevice();
+  const messageKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  const packet = await makeMessageKeyPacket(messageKey);
+  let textIv = null, ct = null;
+  if (plainText) {
+    textIv = crypto.getRandomValues(new Uint8Array(12));
+    const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv: textIv }, messageKey, utf8(plainText));
+    ct = b64(cipher);
+  }
+  let image = null;
+  if (file) {
+    const imageIv = crypto.getRandomValues(new Uint8Array(12));
+    const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv: imageIv }, messageKey, await file.arrayBuffer());
+    image = { blob: new Blob([cipher], { type: "application/octet-stream" }), iv: b64(imageIv), mime: file.type };
+  }
+  return { body: E2EE2_PREFIX + JSON.stringify({ v: 2, senderDeviceId: packet.senderDeviceId, wraps: packet.wraps, iv: textIv ? b64(textIv) : null, ct }), image };
+}
+async function decryptE2EE2Body(body) {
+  const packet = JSON.parse(body.slice(E2EE2_PREFIX.length));
+  const key = await decryptMessageKey(packet);
+  if (!packet.ct) return "";
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(packet.iv) }, key, unb64(packet.ct));
   return text(plain);
 }
-
-async function encryptFile(file, user) {
-  const key = await getChatKey(user);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plain = await file.arrayBuffer();
-  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain);
-  return { blob: new Blob([cipher], { type: "application/octet-stream" }), iv: b64(iv) };
+async function getE2EE2KeyFromBody(body) {
+  const packet = JSON.parse(body.slice(E2EE2_PREFIX.length));
+  return decryptMessageKey(packet);
 }
-
-async function decryptFile(blob, ivB64, mimeType) {
-  const key = await getChatKey(selectedUser);
-  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(ivB64) }, key, await blob.arrayBuffer());
-  return new Blob([plain], { type: mimeType || "image/jpeg" });
+async function encryptText(plain) { return (await encryptE2EE2(plain, null)).body; }
+function isEncryptedBody(body) { return typeof body === "string" && (body.startsWith(E2EE_PREFIX) || body.startsWith(E2EE2_PREFIX)); }
+async function decryptText(body, user) {
+  if (!body) return "";
+  if (body.startsWith(E2EE2_PREFIX)) return decryptE2EE2Body(body);
+  if (body.startsWith(E2EE_PREFIX)) {
+    const packet = JSON.parse(body.slice(E2EE_PREFIX.length));
+    const key = await getLegacyChatKey(user);
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(packet.iv) }, key, unb64(packet.ct));
+    return text(plain);
+  }
+  return body;
+}
+async function decryptFileForMessage(m) {
+  if (!m.image_iv) throw new Error("У фото нет IV.");
+  const { data, error } = await db.storage.from(PHOTO_BUCKET).download(m.image_path);
+  if (error) throw error;
+  if (!m.body?.startsWith(E2EE2_PREFIX)) throw new Error("Старая версия фото использует старый ключ.");
+  const key = await getE2EE2KeyFromBody(m.body);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(m.image_iv) }, key, await data.arrayBuffer());
+  return new Blob([plain], { type: m.image_mime || "image/jpeg" });
 }
 
 function updateNotifyUI() {
@@ -340,6 +382,7 @@ async function enterApp(user) {
   $("auth").classList.add("hidden"); $("app").classList.remove("hidden");
   try {
     await ensureIdentity();
+    await ensureDevice();
   } catch (e) {
     console.error(e);
     alert("Не удалось включить E2EE: " + e.message);
@@ -393,15 +436,14 @@ async function loadMessages() {
 
 function escapeAttr(s) { return String(s).replace(/["&<>]/g, c => ({'"':'&quot;','&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
-async function uploadPhoto(file) {
-  if (!file || !currentUser) return null;
+async function uploadPhoto(file, imageInfo) {
+  if (!file || !currentUser || !imageInfo) return null;
   if (!file.type.startsWith("image/")) { alert("Можно отправлять только изображения."); return null; }
   if (file.size > 10 * 1024 * 1024) { alert("Фото слишком большое. Максимум 10 МБ."); return null; }
-  const { blob, iv } = await encryptFile(file, selectedUser);
   const path = `${currentUser.id}/${crypto.randomUUID()}.mimi`;
-  const { error } = await db.storage.from(PHOTO_BUCKET).upload(path, blob, { contentType: "application/octet-stream", upsert: false });
+  const { error } = await db.storage.from(PHOTO_BUCKET).upload(path, imageInfo.blob, { contentType: "application/octet-stream", upsert: false });
   if (error) { console.error("Encrypted photo upload error:", error); alert("Не удалось загрузить зашифрованное фото: " + error.message); return null; }
-  return { path, iv, mime: file.type };
+  return { path, iv: imageInfo.iv, mime: imageInfo.mime };
 }
 
 function showPhotoPreview(file) {
@@ -420,30 +462,21 @@ async function appendImageMessage(m, container, scroll) {
     if (!m.image_iv) {
       const { data: legacy } = await db.storage.from(PHOTO_BUCKET).createSignedUrl(m.image_path, 60 * 60);
       if (!legacy?.signedUrl) throw new Error("Legacy image URL unavailable");
-      const img = document.createElement("img");
-      img.className = "messageImage"; img.src = legacy.signedUrl; img.alt = "Фото"; img.loading = "lazy";
-      img.onclick = () => window.open(legacy.signedUrl, "_blank", "noopener,noreferrer");
-      container.appendChild(img);
+      const img = document.createElement("img"); img.className = "messageImage"; img.src = legacy.signedUrl; img.alt = "Фото"; img.loading = "lazy";
+      img.onclick = () => window.open(legacy.signedUrl, "_blank", "noopener,noreferrer"); container.appendChild(img);
       if (m.body) { const caption = document.createElement("div"); caption.className = "imageCaption"; caption.textContent = m.body; container.appendChild(caption); }
-      if (scroll) $("messages").scrollTop = $("messages").scrollHeight;
-      return;
-    }
-    const { data, error } = await db.storage.from(PHOTO_BUCKET).download(m.image_path);
-    if (error) throw error;
-    const blob = await decryptFile(data, m.image_iv, m.image_mime);
-    const url = URL.createObjectURL(blob);
-    const img = document.createElement("img"); img.className = "messageImage"; img.src = url; img.alt = "Зашифрованное фото"; img.loading = "lazy";
-    img.onclick = () => window.open(url, "_blank", "noopener,noreferrer");
-    container.appendChild(img);
-    if (m.body) {
-      const caption = document.createElement("div"); caption.className = "imageCaption";
-      caption.textContent = await decryptText(m.body, m.sender_id === currentUser.id ? selectedUser : allUsers.find(u => u.id === m.sender_id));
-      container.appendChild(caption);
+    } else {
+      const blob = await decryptFileForMessage(m); const url = URL.createObjectURL(blob);
+      const img = document.createElement("img"); img.className = "messageImage"; img.src = url; img.alt = "Зашифрованное фото"; img.loading = "lazy";
+      img.onclick = () => window.open(url, "_blank", "noopener,noreferrer"); container.appendChild(img);
+      if (m.body?.startsWith(E2EE2_PREFIX)) {
+        const captionText = await decryptE2EE2Body(m.body);
+        if (captionText) { const caption = document.createElement("div"); caption.className = "imageCaption"; caption.textContent = captionText; container.appendChild(caption); }
+      }
     }
     if (scroll) $("messages").scrollTop = $("messages").scrollHeight;
   } catch (e) {
-    console.error("Decrypt image error:", e);
-    const err = document.createElement("div"); err.className = "imageCaption"; err.textContent = "🔒 Не удалось расшифровать фото на этом устройстве."; container.appendChild(err);
+    console.error("Decrypt image error:", e); const err = document.createElement("div"); err.className = "imageCaption"; err.textContent = "🔒 Не удалось расшифровать фото на этом устройстве."; container.appendChild(err);
   }
 }
 
@@ -484,18 +517,19 @@ $("sendForm").addEventListener("submit", async e => {
   const body = $("messageInput").value.trim(); const file = selectedPhoto;
   if (!body && !file) return;
   const submitBtn = $("sendForm").querySelector('button[type="submit"]'); submitBtn.disabled = true;
-  let imageInfo = null;
+  let imageInfo = null, imageRow = null;
   try {
-    const encryptedBody = body ? await encryptText(body, selectedUser) : "";
-    if (file) { imageInfo = await uploadPhoto(file); if (!imageInfo) return; }
+    const encrypted = await encryptE2EE2(body, file);
+    if (file) { imageInfo = encrypted.image; imageRow = await uploadPhoto(file, imageInfo); if (!imageRow) return; }
     $("messageInput").value = ""; selectedPhoto = null; $("photoInput").value = ""; removePhotoPreview();
     const { data, error } = await db.from("messages").insert({
-      sender_id: currentUser.id, receiver_id: selectedUser.id, body: encryptedBody,
-      image_path: imageInfo?.path || null, image_iv: imageInfo?.iv || null, image_mime: imageInfo?.mime || null
+      sender_id: currentUser.id, receiver_id: selectedUser.id, body: encrypted.body,
+      image_path: imageRow?.path || null, image_iv: imageRow?.iv || null, image_mime: imageRow?.mime || null,
+      sender_device_id: await idbGet("deviceId:" + currentUser.id)
     }).select().single();
     if (error) {
       console.error(error); alert("Не удалось отправить сообщение: " + error.message); $("messageInput").value = body;
-      if (imageInfo?.path) await db.storage.from(PHOTO_BUCKET).remove([imageInfo.path]); return;
+      if (imageRow?.path) await db.storage.from(PHOTO_BUCKET).remove([imageRow.path]); return;
     }
     await appendMessage(data);
   } catch (e) {
