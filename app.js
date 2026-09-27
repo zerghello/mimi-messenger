@@ -9,7 +9,7 @@ const RECOVERY_LINK_AT_LOAD = (() => {
 
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
-const APP_VERSION = "5.6.5";
+const APP_VERSION = "5.7.1";
 const $ = id => document.getElementById(id);
 function setDebugStatus(message) {
   const el = $("debugStatus");
@@ -628,14 +628,39 @@ $("saveProfile").addEventListener("click", async () => {
     if (oldErr) throw oldErr;
     let avatarPath = old?.avatar_path || null;
     if (file) {
-      const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
-      avatarPath = `${currentUser.id}/${crypto.randomUUID()}.${ext}`;
-      const { error: upErr } = await db.storage.from(AVATAR_BUCKET).upload(avatarPath, file, {
-        contentType: file.type,
+      // Android/Samsung Internet can expose camera/gallery files with a fragile File/Blob stream.
+      // Normalize supported images to a small JPEG Blob before sending to Supabase Storage.
+      let uploadBody = file;
+      let uploadType = file.type || "image/jpeg";
+      let uploadExt = "jpg";
+      try {
+        const bitmap = await createImageBitmap(file);
+        const maxSide = 640;
+        const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const ctx = canvas.getContext("2d", { alpha: false });
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close?.();
+        uploadBody = await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error("Не удалось подготовить изображение")), "image/jpeg", 0.86));
+        uploadType = "image/jpeg";
+      } catch (normalizeErr) {
+        console.warn("Avatar normalization skipped:", normalizeErr);
+      }
+      avatarPath = `${currentUser.id}/${crypto.randomUUID()}.jpg`;
+      const { error: upErr } = await db.storage.from(AVATAR_BUCKET).upload(avatarPath, uploadBody, {
+        contentType: uploadType,
         cacheControl: "3600",
         upsert: false
       });
-      if (upErr) throw new Error("Ошибка загрузки аватара: " + upErr.message);
+      if (upErr) {
+        const msg = upErr.message || "Ошибка Storage";
+        if (/failed to fetch/i.test(msg)) {
+          throw new Error("Supabase Storage не принял загрузку. Проверь bucket profile-avatars и Storage policies.");
+        }
+        throw new Error("Ошибка загрузки аватара: " + msg);
+      }
     }
     const { error } = await db.from("profiles").update({ username, avatar_path: avatarPath }).eq("id", currentUser.id);
     if (error) throw error;
