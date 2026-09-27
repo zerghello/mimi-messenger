@@ -13,6 +13,7 @@ const E2EE_PREFIX = "E2EE1:";
 const IDB_NAME = "mimi-e2ee";
 const IDB_STORE = "identity";
 let identity = null;
+let passwordRecoveryMode = false;
 
 let notificationPermission = (typeof Notification !== "undefined") ? Notification.permission : "unsupported";
 let unreadTotal = 0;
@@ -239,15 +240,61 @@ function showIncomingNotification(m) {
 function updatePageTitle() { document.title = unreadTotal ? `(${unreadTotal}) MiMi Messenger` : "MiMi Messenger"; }
 function clearUnread() { unreadTotal = 0; updatePageTitle(); }
 
+function isPasswordRecoveryUrl() {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const query = new URLSearchParams(window.location.search);
+  return hash.get("type") === "recovery" || query.get("type") === "recovery";
+}
+
+function showResetPanel() {
+  passwordRecoveryMode = true;
+  currentUser = null; selectedUser = null; identity = null;
+  $("app").classList.add("hidden");
+  $("auth").classList.remove("hidden");
+  $("email").classList.add("hidden");
+  $("password").classList.add("hidden");
+  $("username").classList.add("hidden");
+  $("signup").classList.add("hidden");
+  $("login").classList.add("hidden");
+  $("forgotPassword").classList.add("hidden");
+  $("resetPanel").classList.remove("hidden");
+  $("authMsg").textContent = "Установи новый пароль для аккаунта.";
+}
+
+function showNormalAuth() {
+  passwordRecoveryMode = false;
+  $("email").classList.remove("hidden");
+  $("password").classList.remove("hidden");
+  $("username").classList.remove("hidden");
+  $("signup").classList.remove("hidden");
+  $("login").classList.remove("hidden");
+  $("forgotPassword").classList.remove("hidden");
+  $("resetPanel").classList.add("hidden");
+}
+
 async function init() {
   updateNotifyUI();
+
+  db.auth.onAuthStateChange(async (event, session) => {
+    if (event === "PASSWORD_RECOVERY") {
+      showResetPanel();
+      return;
+    }
+    if (session && !passwordRecoveryMode) await enterApp(session.user);
+    else if (!session && !passwordRecoveryMode) { showNormalAuth(); showAuth(); }
+  });
+
   const { data, error } = await db.auth.getSession();
   if (error) console.error(error);
-  if (data.session) await enterApp(data.session.user);
-  else showAuth();
-  db.auth.onAuthStateChange(async (_event, session) => {
-    if (session) await enterApp(session.user); else showAuth();
-  });
+
+  if (isPasswordRecoveryUrl()) {
+    showResetPanel();
+  } else if (data.session) {
+    await enterApp(data.session.user);
+  } else {
+    showNormalAuth();
+    showAuth();
+  }
 }
 
 function showAuth() {
@@ -443,6 +490,49 @@ $("login").onclick = async () => {
   if (!email || !password) { $("authMsg").textContent = "Введи email и пароль."; return; }
   const { error } = await db.auth.signInWithPassword({ email, password });
   if (error) $("authMsg").textContent = translateAuthError(error.message);
+};
+
+$("forgotPassword").onclick = async () => {
+  const email = $("email").value.trim();
+  if (!email) { $("authMsg").textContent = "Сначала введи email."; return; }
+  $("authMsg").textContent = "Отправляю ссылку восстановления...";
+  const redirectTo = window.location.origin + window.location.pathname;
+  const { error } = await db.auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) {
+    $("authMsg").textContent = "Не удалось отправить письмо: " + error.message;
+    return;
+  }
+  $("authMsg").textContent = "Ссылка восстановления отправлена на почту. Открой её и задай новый пароль.";
+};
+
+$("savePassword").onclick = async () => {
+  const p1 = $("newPassword").value;
+  const p2 = $("newPassword2").value;
+  if (p1.length < 6) { $("authMsg").textContent = "Пароль должен содержать минимум 6 символов."; return; }
+  if (p1 !== p2) { $("authMsg").textContent = "Пароли не совпадают."; return; }
+
+  $("savePassword").disabled = true;
+  $("authMsg").textContent = "Изменяю пароль...";
+  try {
+    const { error } = await db.auth.updateUser({ password: p1 });
+    if (error) throw error;
+    $("authMsg").textContent = "Пароль изменён. Входим...";
+    $("newPassword").value = "";
+    $("newPassword2").value = "";
+    const { data } = await db.auth.getUser();
+    showNormalAuth();
+    if (data?.user) await enterApp(data.user);
+  } catch (e) {
+    console.error(e);
+    $("authMsg").textContent = "Не удалось изменить пароль: " + e.message;
+  } finally {
+    $("savePassword").disabled = false;
+  }
+};
+
+$("cancelReset").onclick = async () => {
+  await db.auth.signOut();
+  window.location.href = window.location.origin + window.location.pathname;
 };
 
 $("logout").onclick = async () => { await db.auth.signOut(); };

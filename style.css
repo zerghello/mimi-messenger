@@ -36,3 +36,5 @@ button.secondary{background:#374151}.msg{margin-top:12px;min-height:20px;color:#
 .bubble.imageBubble{padding:6px}
 .imageCaption{margin-top:4px;white-space:pre-wrap}
 @media(max-width:700px){.messageImage{max-height:320px}.photoBtn{flex-basis:44px;width:44px}}
+
+.linkBtn{background:none;color:#c4b5fd;padding:8px 0;margin-top:8px;text-decoration:underline}.resetPanel{margin-top:16px;padding-top:16px;border-top:1px solid #374151}.resetPanel h2{margin:0 0 8px;font-size:20px}.resetPanel input{width:100%;padding:13px;border:1px solid #374151;border-radius:10px;background:#111827;color:white;margin-top:10px;outline:none}.resetPanel button{width:100%;margin-top:10px}

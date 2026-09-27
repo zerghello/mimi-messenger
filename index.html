@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>MiMi Messenger</title>
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=5.1">
 </head>
 <body>
   <div id="auth" class="screen">
@@ -19,12 +19,22 @@
       <input id="password" type="password" autocomplete="new-password" placeholder="Пароль">
       <input id="username" type="text" autocomplete="nickname" placeholder="Имя пользователя (для регистрации)">
 
+      <button id="forgotPassword" type="button" class="linkBtn">Забыли пароль?</button>
+
       <div class="row">
         <button id="signup">Регистрация</button>
         <button id="login" class="secondary">Войти</button>
       </div>
 
       <div id="authMsg" class="msg"></div>
+
+      <div id="resetPanel" class="resetPanel hidden">
+        <h2>Новый пароль</h2>
+        <input id="newPassword" type="password" autocomplete="new-password" placeholder="Новый пароль">
+        <input id="newPassword2" type="password" autocomplete="new-password" placeholder="Повторите новый пароль">
+        <button id="savePassword" type="button">Изменить пароль</button>
+        <button id="cancelReset" type="button" class="secondary">Отмена</button>
+      </div>
     </div>
   </div>
 
@@ -60,6 +70,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=5.1"></script>
 </body>
 </html>
