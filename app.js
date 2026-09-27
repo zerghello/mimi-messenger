@@ -9,7 +9,7 @@ const RECOVERY_LINK_AT_LOAD = (() => {
 
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
-const APP_VERSION = "5.7.1";
+const APP_VERSION = "5.7.2";
 const $ = id => document.getElementById(id);
 function setDebugStatus(message) {
   const el = $("debugStatus");
@@ -649,17 +649,63 @@ $("saveProfile").addEventListener("click", async () => {
         console.warn("Avatar normalization skipped:", normalizeErr);
       }
       avatarPath = `${currentUser.id}/${crypto.randomUUID()}.jpg`;
-      const { error: upErr } = await db.storage.from(AVATAR_BUCKET).upload(avatarPath, uploadBody, {
-        contentType: uploadType,
-        cacheControl: "3600",
-        upsert: false
-      });
-      if (upErr) {
-        const msg = upErr.message || "Ошибка Storage";
-        if (/failed to fetch/i.test(msg)) {
-          throw new Error("Supabase Storage не принял загрузку. Проверь bucket profile-avatars и Storage policies.");
+
+      // Надёжная загрузка для Android/Samsung Internet:
+      // сначала превращаем тело в ArrayBuffer, затем пробуем обычный Supabase SDK.
+      // Если браузер возвращает сетевое "Failed to fetch", используем прямой REST fallback
+      // с текущим access token. Это помогает отличить реальную ошибку Storage от проблемы fetch.
+      let uploadError = null;
+      try {
+        const bodyBuffer = uploadBody instanceof ArrayBuffer
+          ? uploadBody
+          : await uploadBody.arrayBuffer();
+        const result = await db.storage.from(AVATAR_BUCKET).upload(avatarPath, bodyBuffer, {
+          contentType: uploadType,
+          cacheControl: "3600",
+          upsert: false
+        });
+        uploadError = result.error || null;
+      } catch (sdkErr) {
+        uploadError = sdkErr;
+      }
+
+      if (uploadError) {
+        const msg = uploadError.message || String(uploadError) || "Ошибка Storage";
+        console.warn("Avatar SDK upload failed, trying REST fallback:", uploadError);
+
+        try {
+          const { data: sessionData, error: sessionErr } = await db.auth.getSession();
+          if (sessionErr) throw sessionErr;
+          const accessToken = sessionData?.session?.access_token;
+          if (!accessToken) throw new Error("Нет активной сессии авторизации.");
+
+          const bodyBuffer = uploadBody instanceof ArrayBuffer
+            ? uploadBody
+            : await uploadBody.arrayBuffer();
+          const encodedPath = avatarPath.split("/").map(encodeURIComponent).join("/");
+          const endpoint = `${window.SUPABASE_URL}/storage/v1/object/${AVATAR_BUCKET}/${encodedPath}`;
+          const response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              apikey: window.SUPABASE_ANON_KEY,
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": uploadType,
+              "x-upsert": "false",
+              "cache-control": "3600"
+            },
+            body: bodyBuffer
+          });
+
+          if (!response.ok) {
+            let detail = "";
+            try { detail = (await response.text()).slice(0, 500); } catch (_) {}
+            throw new Error(`Storage HTTP ${response.status}${detail ? ": " + detail : ""}`);
+          }
+        } catch (restErr) {
+          console.error("Avatar REST upload failed:", restErr);
+          const detail = restErr?.message || msg;
+          throw new Error("Не удалось загрузить аватар: " + detail);
         }
-        throw new Error("Ошибка загрузки аватара: " + msg);
       }
     }
     const { error } = await db.from("profiles").update({ username, avatar_path: avatarPath }).eq("id", currentUser.id);
