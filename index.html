@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MiMi Messenger</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="auth" class="screen">
+    <div class="card">
+      <h1>MiMi Messenger</h1>
+      <p class="muted">Личный мессенджер</p>
+      <input id="email" type="email" placeholder="Email">
+      <input id="password" type="password" placeholder="Пароль">
+      <input id="username" type="text" placeholder="Имя пользователя (для регистрации)">
+      <div class="row">
+        <button id="signup">Регистрация</button>
+        <button id="login" class="secondary">Войти</button>
+      </div>
+      <div id="authMsg" class="msg"></div>
+    </div>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="sideTop">
+        <div>
+          <strong>MiMi Messenger</strong>
+          <div id="me" class="muted small"></div>
+        </div>
+        <button id="logout" class="iconBtn" title="Выйти">↪</button>
+      </div>
+      <input id="search" class="search" placeholder="Поиск пользователей...">
+      <div id="users" class="users"></div>
+    </aside>
+
+    <main class="chat">
+      <header id="chatHeader" class="chatHeader">Выберите пользователя</header>
+      <section id="messages" class="messages">
+        <div class="empty">Выберите пользователя слева, чтобы начать чат.</div>
+      </section>
+      <form id="sendForm" class="composer hidden">
+        <input id="messageInput" autocomplete="off" placeholder="Написать сообщение...">
+        <button>➤</button>
+      </form>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
