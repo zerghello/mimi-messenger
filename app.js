@@ -469,7 +469,6 @@ function showAuth() {
 
 async function enterApp(user) {
   currentUser = user;
-  setDebugStatus("авторизация OK • загружаю пользователей...");
   $("auth").classList.add("hidden"); $("app").classList.remove("hidden");
 
   // ВАЖНО: E2EE больше НЕ блокирует запуск списка пользователей.
@@ -499,12 +498,10 @@ async function enterApp(user) {
 
 async function loadUsers() {
   if (!currentUser?.id) {
-    setDebugStatus("нет авторизованного пользователя");
     $("users").innerHTML = '<div class="muted">Пользователь не авторизован.</div>';
     return;
   }
 
-  setDebugStatus("запрос profiles...");
 
   // Сначала минимальный запрос. Он не зависит от E2EE и аватаров.
   let result = await db.from("profiles")
@@ -520,14 +517,12 @@ async function loadUsers() {
 
   if (result.error) {
     console.error("Profiles query failed:", result.error);
-    setDebugStatus("ОШИБКА profiles: " + (result.error.message || "Supabase error"));
     $("users").innerHTML = `<div class="muted usersError">Ошибка загрузки пользователей.<br><small>${escapeHtml(result.error.message || "Ошибка Supabase")}</small></div>`;
     return;
   }
 
   const rows = result.data || [];
   allUsers = rows.filter(u => u.id !== currentUser.id);
-  setDebugStatus(`Supabase вернул ${rows.length}; других пользователей: ${allUsers.length}`);
   renderUsers(allUsers);
 
   if (!allUsers.length) {

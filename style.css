@@ -62,4 +62,36 @@ button.secondary{background:#374151}.msg{margin-top:12px;min-height:20px;color:#
 
 .avatarSelectedIcon{font-size:32px;line-height:1}.avatarPickLabel{border:0;}
 
-.debugStatus{font-size:11px;line-height:1.25;padding:5px 10px;word-break:break-word;opacity:.8}.usersError{word-break:break-word}
+.usersError{word-break:break-word}
+
+
+/* MiMi Messenger v5.7 — clean interface */
+.sidebar{box-shadow:inset -1px 0 0 rgba(255,255,255,.02)}
+.sideTop strong{font-size:18px;letter-spacing:-.2px}
+.topActions .iconBtn{min-width:42px;height:42px;display:inline-flex;align-items:center;justify-content:center;font-size:18px}
+.search{border-radius:14px;background:#111827;margin-top:8px}
+.search:focus,.composer input:focus,.card input:focus,.profileCard input:focus{border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.15)}
+.user{min-height:58px;padding:10px 12px;border:1px solid transparent;transition:background .15s,border-color .15s}
+.user:hover{border-color:#374151}.user.active{border-color:#4b5563}
+.userName{font-size:15px}.chatHeader{padding-left:18px;padding-right:18px;background:rgba(17,24,39,.35)}
+.messages{scrollbar-width:thin}.users{scrollbar-width:thin}
+@media(max-width:700px){
+  .sidebar{width:40%;min-width:145px;padding:10px 9px}
+  .sideTop{display:block;margin-bottom:8px}
+  .sideTop>div:first-child{min-width:0}
+  .sideTop strong{font-size:17px;display:block;margin-bottom:7px}
+  .topActions{width:100%;display:flex;gap:5px;margin-top:8px}
+  .topActions .iconBtn{flex:1;min-width:0;padding:8px 4px;height:40px}
+  .search{font-size:13px;margin-top:7px;padding:11px 10px}
+  .user{min-height:54px;padding:9px 7px;gap:7px}
+  .userName{font-size:14px}
+  .chatHeader{flex-basis:58px;padding:8px 10px}
+  .chatHeader .avatarUser{width:34px;height:34px}
+}
+@media(max-width:360px){
+  .sidebar{min-width:132px;padding-left:7px;padding-right:7px}
+  .sideTop strong{font-size:15px}
+  .meRow .small{font-size:11px}
+  .userName{font-size:13px}
+  .avatarUser{width:32px;height:32px}
+}
