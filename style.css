@@ -22,3 +22,6 @@ button.secondary{background:#374151}.msg{margin-top:12px;min-height:20px;color:#
 .composer input{margin:0;min-width:0;flex:1}.composer button{flex:0 0 55px;width:55px}
 @media(max-width:700px){.sidebar{width:40%;min-width:140px;padding:10px}.chatHeader{flex-basis:58px;padding:18px 12px}.messages{padding:12px}.bubble{max-width:85%}.composer{padding:8px;padding-bottom:max(8px,env(safe-area-inset-bottom))}.composer input{padding:12px 10px}.composer button{flex-basis:48px;width:48px;padding:10px}.sideTop strong{display:block;line-height:1.1}}
 @media(max-width:430px){.sidebar{width:40%;min-width:135px}.search{padding:11px 9px;font-size:13px}.user{padding:10px 8px}.chatHeader{padding-left:10px;padding-right:10px}}
+
+.topActions{display:flex;gap:6px;align-items:center}
+#notifyBtn{font-size:16px}
