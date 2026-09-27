@@ -9,7 +9,7 @@ const RECOVERY_LINK_AT_LOAD = (() => {
 
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
-const APP_VERSION = "5.7.3";
+const APP_VERSION = "5.8.1";
 const $ = id => document.getElementById(id);
 function setDebugStatus(message) {
   const el = $("debugStatus");
@@ -19,6 +19,8 @@ let currentUser = null;
 let selectedUser = null;
 let realtimeChannel = null;
 let allUsers = [];
+let activeSideTab = "chats";
+let chatSummaries = [];
 let selectedPhoto = null;
 let selectedAvatarFile = null;
 let selectedAvatarBuffer = null;
@@ -526,6 +528,7 @@ async function loadUsers() {
   const rows = result.data || [];
   allUsers = rows.filter(u => u.id !== currentUser.id);
   renderUsers(allUsers);
+  await loadChatList();
 
   if (!allUsers.length) {
     $("users").innerHTML = '<div class="muted">Других пользователей пока нет.</div>';
@@ -555,6 +558,10 @@ async function setAvatarElement(el, name, path) {
 
 function renderUsers(users) {
   $("users").innerHTML = "";
+  if (!users.length) {
+    $("users").innerHTML = '<div class="chatEmpty">Других пользователей пока нет.</div>';
+    return;
+  }
   for (const u of users) {
     const div = document.createElement("div");
     div.className = "user" + (selectedUser?.id === u.id ? " active" : "");
@@ -566,6 +573,97 @@ function renderUsers(users) {
     div.onclick = () => selectUser(u);
     $("users").appendChild(div);
   }
+}
+
+function formatChatTime(value) {
+  const d = new Date(value);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  return d.toLocaleDateString([], {day:"2-digit", month:"2-digit"});
+}
+
+async function loadChatList() {
+  if (!currentUser?.id || !$("chatList")) return;
+  const { data, error } = await db.from("messages")
+    .select("id,sender_id,receiver_id,body,image_path,created_at")
+    .or(`sender_id.eq.${currentUser.id},receiver_id.eq.${currentUser.id}`)
+    .order("created_at", { ascending: false })
+    .limit(1000);
+  if (error) {
+    console.warn("Chat list load failed:", error);
+    $("chatList").innerHTML = '<div class="chatEmpty">Не удалось загрузить чаты.</div>';
+    return;
+  }
+  const map = new Map();
+  for (const m of (data || [])) {
+    const otherId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id;
+    if (!map.has(otherId)) map.set(otherId, m);
+  }
+  chatSummaries = Array.from(map.entries()).map(([userId, m]) => {
+    const user = allUsers.find(u => u.id === userId);
+    return user ? { user, message: m } : null;
+  }).filter(Boolean);
+  renderChatList();
+}
+
+async function chatPreviewText(item) {
+  const m = item.message;
+  if (m.image_path) return "📷 Фото";
+  try {
+    const other = item.user;
+    const plain = await decryptText(m.body, other);
+    return plain || "Сообщение";
+  } catch (_) {
+    return "🔒 Зашифрованное сообщение";
+  }
+}
+
+async function renderChatList() {
+  const box = $("chatList");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!chatSummaries.length) {
+    box.innerHTML = '<div class="chatEmpty">Здесь появятся чаты после первого сообщения.</div>';
+    return;
+  }
+  for (const item of chatSummaries) {
+    const u = item.user, m = item.message;
+    const div = document.createElement("div");
+    div.className = "chatItem" + (selectedUser?.id === u.id ? " active" : "");
+    const av = document.createElement("div"); av.className = "avatar avatarUser";
+    const info = document.createElement("div"); info.className = "chatItemInfo";
+    const top = document.createElement("div"); top.className = "chatItemTop";
+    const name = document.createElement("div"); name.className = "chatItemName"; name.textContent = u.username;
+    const time = document.createElement("div"); time.className = "chatItemTime"; time.textContent = formatChatTime(m.created_at);
+    const preview = document.createElement("div"); preview.className = "chatItemPreview"; preview.textContent = "Загрузка…";
+    top.append(name, time); info.append(top, preview); div.append(av, info);
+    setAvatarElement(av, u.username, u.avatar_path);
+    div.onclick = () => selectUser(u);
+    box.appendChild(div);
+    chatPreviewText(item).then(t => { if (preview.isConnected) preview.textContent = t; });
+  }
+}
+
+function showSideTab(tab) {
+  activeSideTab = tab;
+  $("tabChats")?.classList.toggle("active", tab === "chats");
+  $("tabPeople")?.classList.toggle("active", tab === "people");
+  $("chatList")?.classList.toggle("hidden", tab !== "chats");
+  $("users")?.classList.toggle("hidden", tab !== "people");
+  $("search").placeholder = tab === "chats" ? "Поиск чатов..." : "Поиск людей...";
+  const q = $("search").value.trim().toLowerCase();
+  if (tab === "people") {
+    renderUsers(allUsers.filter(u => u.username.toLowerCase().includes(q)));
+  } else {
+    const filtered = chatSummaries.filter(x => x.user.username.toLowerCase().includes(q));
+    renderChatListFiltered(filtered);
+  }
+}
+
+async function renderChatListFiltered(items) {
+  const old = chatSummaries; chatSummaries = items;
+  await renderChatList();
+  chatSummaries = old;
 }
 
 async function loadMyProfile() {
@@ -750,9 +848,16 @@ $("saveProfile").addEventListener("click", async () => {
 });
 
 $("search").addEventListener("input", e => {
-  const q = e.target.value.toLowerCase();
-  renderUsers(allUsers.filter(u => u.username.toLowerCase().includes(q)));
+  const q = e.target.value.trim().toLowerCase();
+  if (activeSideTab === "people") {
+    renderUsers(allUsers.filter(u => u.username.toLowerCase().includes(q)));
+  } else {
+    renderChatListFiltered(chatSummaries.filter(x => x.user.username.toLowerCase().includes(q)));
+  }
 });
+
+$("tabChats")?.addEventListener("click", () => showSideTab("chats"));
+$("tabPeople")?.addEventListener("click", () => showSideTab("people"));
 
 async function selectUser(user) {
   selectedUser = user;
@@ -761,7 +866,8 @@ async function selectUser(user) {
   setAvatarElement($("chatAvatar"), user.username, user.avatar_path);
   $("fingerprintBtn").onclick = () => showKeyFingerprint(user);
   try { await updateKeyWarning(user); } catch (e) { console.warn("E2EE key check failed", e); }
-  $("sendForm").classList.remove("hidden"); renderUsers(allUsers);
+  $("sendForm").classList.remove("hidden");
+  showSideTab("chats");
   await loadMessages(); subscribeToMessages();
 }
 
@@ -848,8 +954,8 @@ function subscribeToMessages() {
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, async payload => {
       const m = payload.new;
       const isThisChat = (m.sender_id === currentUser.id && m.receiver_id === selectedUser.id) || (m.sender_id === selectedUser.id && m.receiver_id === currentUser.id);
-      if (isThisChat && m.sender_id !== currentUser.id) { await appendMessage(m); showIncomingNotification(m); }
-      else if (!isThisChat && m.sender_id !== currentUser.id) showIncomingNotification(m);
+      if (isThisChat && m.sender_id !== currentUser.id) { await appendMessage(m); showIncomingNotification(m); await loadChatList(); }
+      else if (!isThisChat && m.sender_id !== currentUser.id) { showIncomingNotification(m); await loadChatList(); }
     }).subscribe();
 }
 
@@ -873,6 +979,7 @@ $("sendForm").addEventListener("submit", async e => {
       if (imageRow?.path) await db.storage.from(PHOTO_BUCKET).remove([imageRow.path]); return;
     }
     await appendMessage(data);
+    await loadChatList();
   } catch (e) {
     console.error(e); alert("E2EE ошибка: " + e.message); $("messageInput").value = body;
   } finally { submitBtn.disabled = false; }
