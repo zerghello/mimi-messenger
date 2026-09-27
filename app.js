@@ -15,6 +15,7 @@ let selectedUser = null;
 let realtimeChannel = null;
 let allUsers = [];
 let selectedPhoto = null;
+let selectedAvatarFile = null;
 const PHOTO_BUCKET = "chat-images";
 const AVATAR_BUCKET = "profile-avatars";
 const E2EE_PREFIX = "E2EE1:";
@@ -537,40 +538,80 @@ $("profileBtn").addEventListener("click", async () => {
 });
 $("closeProfile").addEventListener("click", () => $("profileOverlay").classList.add("hidden"));
 $("profileOverlay").addEventListener("click", e => { if (e.target === $("profileOverlay")) $("profileOverlay").classList.add("hidden"); });
-$("avatarPickBtn").addEventListener("click", () => $("avatarInput").click());
+$("avatarPickBtn").addEventListener("click", () => {
+  const input = $("avatarInput");
+  if (input) input.click();
+});
+
 $("avatarInput").addEventListener("change", e => {
-  const file = e.target.files?.[0]; if (!file) return;
-  if (!file.type.startsWith("image/")) { $("profileMsg").textContent = "Выбери изображение."; return; }
-  if (file.size > 5 * 1024 * 1024) { $("profileMsg").textContent = "Аватар слишком большой. Максимум 5 МБ."; return; }
-  const url = URL.createObjectURL(file); const img = new Image();
-  img.onload = () => { $("profileAvatar").innerHTML = ""; img.className = "avatarPreviewImg"; $("profileAvatar").appendChild(img); URL.revokeObjectURL(url); };
+  const file = e.target.files?.[0];
+  if (!file) return;
+  selectedAvatarFile = file;
+  if (!file.type.startsWith("image/")) {
+    selectedAvatarFile = null;
+    $("profileMsg").textContent = "Выбери изображение JPG, PNG или WebP.";
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    selectedAvatarFile = null;
+    $("profileMsg").textContent = "Аватар слишком большой. Максимум 5 МБ.";
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    $("profileAvatar").innerHTML = "";
+    img.className = "avatarPreviewImg";
+    $("profileAvatar").appendChild(img);
+    URL.revokeObjectURL(url);
+    $("profileMsg").textContent = "Фото выбрано. Нажми «Сохранить».";
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    selectedAvatarFile = null;
+    $("profileMsg").textContent = "Не удалось открыть это изображение.";
+  };
   img.src = url;
 });
 
 $("saveProfile").addEventListener("click", async () => {
-  const username = $("profileUsername").value.trim(); const file = $("avatarInput").files?.[0] || null;
-  if (username.length < 3 || username.length > 30) { $("profileMsg").textContent = "Имя должно содержать от 3 до 30 символов."; return; }
-  $("saveProfile").disabled = true; $("profileMsg").textContent = "Сохраняю...";
+  const username = $("profileUsername").value.trim();
+  const file = selectedAvatarFile || $("avatarInput").files?.[0] || null;
+  if (username.length < 3 || username.length > 30) {
+    $("profileMsg").textContent = "Имя должно содержать от 3 до 30 символов.";
+    return;
+  }
+  $("saveProfile").disabled = true;
+  $("profileMsg").textContent = file ? "Загружаю фото..." : "Сохраняю...";
   try {
-    let avatarPath = null;
-    const { data: old } = await db.from("profiles").select("avatar_path").eq("id", currentUser.id).maybeSingle();
-    avatarPath = old?.avatar_path || null;
+    const { data: old, error: oldErr } = await db.from("profiles").select("avatar_path").eq("id", currentUser.id).maybeSingle();
+    if (oldErr) throw oldErr;
+    let avatarPath = old?.avatar_path || null;
     if (file) {
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
       avatarPath = `${currentUser.id}/${crypto.randomUUID()}.${ext}`;
-      const { error: upErr } = await db.storage.from(AVATAR_BUCKET).upload(avatarPath, file, { contentType: file.type, upsert: false });
-      if (upErr) throw upErr;
+      const { error: upErr } = await db.storage.from(AVATAR_BUCKET).upload(avatarPath, file, {
+        contentType: file.type,
+        cacheControl: "3600",
+        upsert: false
+      });
+      if (upErr) throw new Error("Ошибка загрузки аватара: " + upErr.message);
     }
     const { error } = await db.from("profiles").update({ username, avatar_path: avatarPath }).eq("id", currentUser.id);
     if (error) throw error;
     $("me").textContent = username;
     await setAvatarElement($("myAvatar"), username, avatarPath);
     $("profileMsg").textContent = "✅ Профиль сохранён";
+    selectedAvatarFile = null;
+    $("avatarInput").value = "";
     await loadUsers();
-    setTimeout(() => $("profileOverlay").classList.add("hidden"), 500);
+    setTimeout(() => $("profileOverlay").classList.add("hidden"), 700);
   } catch (e) {
-    console.error(e); $("profileMsg").textContent = "Не удалось сохранить профиль: " + (e.message || e);
-  } finally { $("saveProfile").disabled = false; }
+    console.error(e);
+    $("profileMsg").textContent = "Не удалось сохранить профиль: " + (e.message || e);
+  } finally {
+    $("saveProfile").disabled = false;
+  }
 });
 
 $("search").addEventListener("input", e => {
