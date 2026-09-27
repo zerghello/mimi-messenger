@@ -716,6 +716,23 @@ $("saveProfile").addEventListener("click", async () => {
     }
     const { error } = await db.from("profiles").update({ username, avatar_path: avatarPath }).eq("id", currentUser.id);
     if (error) throw error;
+
+    // После успешного переключения профиля удаляем старый аватар.
+    // Новый файл уже записан и profile.avatar_path указывает на него,
+    // поэтому даже если удаление старого файла не удастся, профиль не ломается.
+    if (hasAvatar && old?.avatar_path && old.avatar_path !== avatarPath) {
+      try {
+        const { error: removeOldError } = await db.storage
+          .from(AVATAR_BUCKET)
+          .remove([old.avatar_path]);
+        if (removeOldError) {
+          console.warn("Old avatar cleanup failed:", removeOldError);
+        }
+      } catch (cleanupErr) {
+        console.warn("Old avatar cleanup failed:", cleanupErr);
+      }
+    }
+
     $("me").textContent = username;
     await setAvatarElement($("myAvatar"), username, avatarPath);
     $("profileMsg").textContent = "✅ Профиль сохранён";
