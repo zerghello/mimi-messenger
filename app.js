@@ -16,6 +16,7 @@ let realtimeChannel = null;
 let allUsers = [];
 let selectedPhoto = null;
 const PHOTO_BUCKET = "chat-images";
+const AVATAR_BUCKET = "profile-avatars";
 const E2EE_PREFIX = "E2EE1:";
 const E2EE2_PREFIX = "E2EE2:";
 const IDB_NAME = "mimi-e2ee";
@@ -471,17 +472,40 @@ async function enterApp(user) {
     alert("Не удалось включить E2EE: " + e.message);
     return;
   }
-  const { data: profile } = await db.from("profiles").select("username,e2ee_public_key").eq("id", user.id).maybeSingle();
-  $("me").textContent = profile?.username || user.user_metadata?.username || user.email || "";
+  const { data: profile } = await db.from("profiles").select("username,e2ee_public_key,avatar_path").eq("id", user.id).maybeSingle();
+  const myName = profile?.username || user.user_metadata?.username || user.email || "";
+  $("me").textContent = myName;
+  setAvatarElement($("myAvatar"), myName, profile?.avatar_path);
   await loadUsers();
 }
 
 async function loadUsers() {
   const { data, error } = await db.from("profiles")
-    .select("id,username,created_at,e2ee_public_key")
+    .select("id,username,created_at,e2ee_public_key,avatar_path")
     .neq("id", currentUser.id).order("username");
   if (error) { console.error(error); $("users").innerHTML = '<div class="muted">Не удалось загрузить пользователей.</div>'; return; }
   allUsers = data || []; renderUsers(allUsers);
+}
+
+function initials(name) {
+  return String(name || "?").trim().split(/\s+/).slice(0,2).map(x => x[0]).join("").toUpperCase() || "?";
+}
+
+async function signedAvatarUrl(path) {
+  if (!path) return null;
+  const { data, error } = await db.storage.from(AVATAR_BUCKET).createSignedUrl(path, 60 * 60);
+  return error ? null : data?.signedUrl || null;
+}
+
+async function setAvatarElement(el, name, path) {
+  if (!el) return;
+  el.innerHTML = "";
+  el.textContent = initials(name);
+  if (!path) return;
+  const url = await signedAvatarUrl(path);
+  if (!url || !el.isConnected) return;
+  const img = document.createElement("img"); img.src = url; img.alt = "";
+  img.onload = () => { el.textContent = ""; el.appendChild(img); };
 }
 
 function renderUsers(users) {
@@ -489,11 +513,65 @@ function renderUsers(users) {
   for (const u of users) {
     const div = document.createElement("div");
     div.className = "user" + (selectedUser?.id === u.id ? " active" : "");
-    div.innerHTML = `<div class="userName">${escapeHtml(u.username)} ${u.e2ee_public_key ? "🔐" : "⚠️"}</div>`;
+    const av = document.createElement("div"); av.className = "avatar avatarUser";
+    const info = document.createElement("div"); info.className = "userInfo";
+    info.innerHTML = `<div class="userName">${escapeHtml(u.username)} ${u.e2ee_public_key ? "🔐" : "⚠️"}</div>`;
+    div.append(av, info);
+    setAvatarElement(av, u.username, u.avatar_path);
     div.onclick = () => selectUser(u);
     $("users").appendChild(div);
   }
 }
+
+async function loadMyProfile() {
+  const { data } = await db.from("profiles").select("username,avatar_path").eq("id", currentUser.id).maybeSingle();
+  const name = data?.username || currentUser.user_metadata?.username || currentUser.email || "";
+  $("profileUsername").value = name;
+  setAvatarElement($("profileAvatar"), name, data?.avatar_path);
+  $("profileMsg").textContent = "";
+}
+
+$("profileBtn").addEventListener("click", async () => {
+  await loadMyProfile();
+  $("profileOverlay").classList.remove("hidden");
+});
+$("closeProfile").addEventListener("click", () => $("profileOverlay").classList.add("hidden"));
+$("profileOverlay").addEventListener("click", e => { if (e.target === $("profileOverlay")) $("profileOverlay").classList.add("hidden"); });
+$("avatarPickBtn").addEventListener("click", () => $("avatarInput").click());
+$("avatarInput").addEventListener("change", e => {
+  const file = e.target.files?.[0]; if (!file) return;
+  if (!file.type.startsWith("image/")) { $("profileMsg").textContent = "Выбери изображение."; return; }
+  if (file.size > 5 * 1024 * 1024) { $("profileMsg").textContent = "Аватар слишком большой. Максимум 5 МБ."; return; }
+  const url = URL.createObjectURL(file); const img = new Image();
+  img.onload = () => { $("profileAvatar").innerHTML = ""; img.className = "avatarPreviewImg"; $("profileAvatar").appendChild(img); URL.revokeObjectURL(url); };
+  img.src = url;
+});
+
+$("saveProfile").addEventListener("click", async () => {
+  const username = $("profileUsername").value.trim(); const file = $("avatarInput").files?.[0] || null;
+  if (username.length < 3 || username.length > 30) { $("profileMsg").textContent = "Имя должно содержать от 3 до 30 символов."; return; }
+  $("saveProfile").disabled = true; $("profileMsg").textContent = "Сохраняю...";
+  try {
+    let avatarPath = null;
+    const { data: old } = await db.from("profiles").select("avatar_path").eq("id", currentUser.id).maybeSingle();
+    avatarPath = old?.avatar_path || null;
+    if (file) {
+      const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+      avatarPath = `${currentUser.id}/${crypto.randomUUID()}.${ext}`;
+      const { error: upErr } = await db.storage.from(AVATAR_BUCKET).upload(avatarPath, file, { contentType: file.type, upsert: false });
+      if (upErr) throw upErr;
+    }
+    const { error } = await db.from("profiles").update({ username, avatar_path: avatarPath }).eq("id", currentUser.id);
+    if (error) throw error;
+    $("me").textContent = username;
+    await setAvatarElement($("myAvatar"), username, avatarPath);
+    $("profileMsg").textContent = "✅ Профиль сохранён";
+    await loadUsers();
+    setTimeout(() => $("profileOverlay").classList.add("hidden"), 500);
+  } catch (e) {
+    console.error(e); $("profileMsg").textContent = "Не удалось сохранить профиль: " + (e.message || e);
+  } finally { $("saveProfile").disabled = false; }
+});
 
 $("search").addEventListener("input", e => {
   const q = e.target.value.toLowerCase();
@@ -503,7 +581,8 @@ $("search").addEventListener("input", e => {
 async function selectUser(user) {
   selectedUser = user;
   clearUnread();
-  $("chatHeader").innerHTML = `<span>${escapeHtml(user.username)}</span><button id="keyWarning" type="button" class="keyWarning hidden" title="Ключ безопасности изменился">⚠️</button><button id="fingerprintBtn" type="button" class="fingerprintBtn" title="Проверить отпечаток E2EE">🔐</button>`;
+  $("chatHeader").innerHTML = `<div id="chatAvatar" class="avatar avatarUser"></div><span>${escapeHtml(user.username)}</span><button id="keyWarning" type="button" class="keyWarning hidden" title="Ключ безопасности изменился">⚠️</button><button id="fingerprintBtn" type="button" class="fingerprintBtn" title="Проверить отпечаток E2EE">🔐</button>`;
+  setAvatarElement($("chatAvatar"), user.username, user.avatar_path);
   $("fingerprintBtn").onclick = () => showKeyFingerprint(user);
   try { await updateKeyWarning(user); } catch (e) { console.warn("E2EE key check failed", e); }
   $("sendForm").classList.remove("hidden"); renderUsers(allUsers);

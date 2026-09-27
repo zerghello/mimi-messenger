@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>MiMi Messenger</title>
-  <link rel="stylesheet" href="style.css?v=5.5">
+  <link rel="stylesheet" href="style.css?v=5.6">
 </head>
 <body>
   <div id="auth" class="screen">
@@ -43,9 +43,8 @@
       <div class="sideTop">
         <div>
           <strong>MiMi Messenger</strong>
-          <div id="me" class="muted small"></div><div id="e2eeStatus" class="muted small">🔐 E2EE</div><div id="notifyStatus" class="muted small"></div>
-        </div>
-        <div class="topActions"><button id="notifyBtn" class="iconBtn" title="Включить уведомления">🔔</button><button id="logout" class="iconBtn" title="Выйти">↪</button></div>
+          <div class="meRow"><div id="myAvatar" class="avatar avatarSmall"></div><div><div id="me" class="muted small"></div><div id="e2eeStatus" class="muted small">🔐 E2EE</div><div id="notifyStatus" class="muted small"></div></div></div>
+        <div class="topActions"><button id="profileBtn" class="iconBtn" title="Мой профиль">👤</button><button id="notifyBtn" class="iconBtn" title="Включить уведомления">🔔</button><button id="logout" class="iconBtn" title="Выйти">↪</button></div>
       </div>
 
       <input id="search" class="search" placeholder="Поиск пользователей...">
@@ -68,8 +67,23 @@
     </main>
   </div>
 
+  <div id="profileOverlay" class="modalOverlay hidden">
+    <div class="profileCard">
+      <h2>Мой профиль</h2>
+      <div class="profileAvatarWrap">
+        <div id="profileAvatar" class="avatar avatarLarge"></div>
+        <button id="avatarPickBtn" type="button" class="secondary">📷 Изменить фото</button>
+        <input id="avatarInput" type="file" accept="image/*" hidden>
+      </div>
+      <label class="fieldLabel">Имя пользователя</label>
+      <input id="profileUsername" type="text" maxlength="30" placeholder="Имя пользователя">
+      <div id="profileMsg" class="msg"></div>
+      <div class="profileActions"><button id="saveProfile" type="button">Сохранить</button><button id="closeProfile" type="button" class="secondary">Закрыть</button></div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
-  <script src="app.js?v=5.5"></script>
+  <script src="app.js?v=5.6"></script>
 </body>
 </html>
