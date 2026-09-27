@@ -118,5 +118,3 @@ button.secondary{background:#374151}.msg{margin-top:12px;min-height:20px;color:#
  .chatItem{min-height:56px;padding:8px 6px;gap:7px}
  .chatItemName{font-size:13px}.chatItemPreview{font-size:11px}.chatItemTime{font-size:9px}
 }
-
-.chatDeleteBtn{border:0;background:transparent;color:#9ca3af;font-size:20px;line-height:1;padding:2px 5px;border-radius:7px;flex:0 0 auto;cursor:pointer}.chatDeleteBtn:hover{background:#4b5563;color:#fff}.chatDeleteBtn:active{transform:scale(.94)}

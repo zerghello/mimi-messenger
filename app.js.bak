@@ -9,7 +9,7 @@ const RECOVERY_LINK_AT_LOAD = (() => {
 
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
-const APP_VERSION = "5.9.0";
+const APP_VERSION = "5.8.1";
 const $ = id => document.getElementById(id);
 function setDebugStatus(message) {
   const el = $("debugStatus");
@@ -584,28 +584,16 @@ function formatChatTime(value) {
 
 async function loadChatList() {
   if (!currentUser?.id || !$("chatList")) return;
-  const [{ data, error }, { data: hiddenRows, error: hiddenError }] = await Promise.all([
-    db.from("messages")
-      .select("id,sender_id,receiver_id,body,image_path,created_at")
-      .or(`sender_id.eq.${currentUser.id},receiver_id.eq.${currentUser.id}`)
-      .order("created_at", { ascending: false })
-      .limit(1000),
-    db.from("hidden_chats")
-      .select("other_user_id,hidden_at")
-      .eq("user_id", currentUser.id)
-  ]);
+  const { data, error } = await db.from("messages")
+    .select("id,sender_id,receiver_id,body,image_path,created_at")
+    .or(`sender_id.eq.${currentUser.id},receiver_id.eq.${currentUser.id}`)
+    .order("created_at", { ascending: false })
+    .limit(1000);
   if (error) {
     console.warn("Chat list load failed:", error);
     $("chatList").innerHTML = '<div class="chatEmpty">Не удалось загрузить чаты.</div>';
     return;
   }
-  if (hiddenError) {
-    console.warn("Hidden chats load failed:", hiddenError);
-    $("chatList").innerHTML = '<div class="chatEmpty">Не удалось загрузить настройки чатов.</div>';
-    return;
-  }
-
-  const hidden = new Map((hiddenRows || []).map(x => [x.other_user_id, new Date(x.hidden_at).getTime()]));
   const map = new Map();
   for (const m of (data || [])) {
     const otherId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id;
@@ -613,11 +601,7 @@ async function loadChatList() {
   }
   chatSummaries = Array.from(map.entries()).map(([userId, m]) => {
     const user = allUsers.find(u => u.id === userId);
-    if (!user) return null;
-    const hiddenAt = hidden.get(userId);
-    const latestAt = new Date(m.created_at).getTime();
-    if (hiddenAt && latestAt <= hiddenAt) return null;
-    return { user, message: m };
+    return user ? { user, message: m } : null;
   }).filter(Boolean);
   renderChatList();
 }
@@ -652,15 +636,9 @@ async function renderChatList() {
     const name = document.createElement("div"); name.className = "chatItemName"; name.textContent = u.username;
     const time = document.createElement("div"); time.className = "chatItemTime"; time.textContent = formatChatTime(m.created_at);
     const preview = document.createElement("div"); preview.className = "chatItemPreview"; preview.textContent = "Загрузка…";
-    const menuBtn = document.createElement("button");
-    menuBtn.type = "button";
-    menuBtn.className = "chatDeleteBtn";
-    menuBtn.textContent = "⋮";
-    menuBtn.title = "Действия с чатом";
-    top.append(name, time, menuBtn); info.append(top, preview); div.append(av, info);
+    top.append(name, time); info.append(top, preview); div.append(av, info);
     setAvatarElement(av, u.username, u.avatar_path);
     div.onclick = () => selectUser(u);
-    menuBtn.onclick = async e => { e.stopPropagation(); await deleteChatForMe(u); };
     box.appendChild(div);
     chatPreviewText(item).then(t => { if (preview.isConnected) preview.textContent = t; });
   }
@@ -686,34 +664,6 @@ async function renderChatListFiltered(items) {
   const old = chatSummaries; chatSummaries = items;
   await renderChatList();
   chatSummaries = old;
-}
-
-async function deleteChatForMe(user) {
-  if (!currentUser?.id || !user?.id) return;
-  const ok = window.confirm(`Удалить чат с «${user.username}» у себя?\n\nИстория сообщений у другого пользователя не удалится.`);
-  if (!ok) return;
-
-  const { error } = await db.from("hidden_chats").upsert({
-    user_id: currentUser.id,
-    other_user_id: user.id,
-    hidden_at: new Date().toISOString()
-  }, { onConflict: "user_id,other_user_id" });
-
-  if (error) {
-    console.error("Hide chat error:", error);
-    alert("Не удалось удалить чат: " + error.message);
-    return;
-  }
-
-  if (selectedUser?.id === user.id) {
-    selectedUser = null;
-    if (realtimeChannel) { await db.removeChannel(realtimeChannel); realtimeChannel = null; }
-    $("chatHeader").textContent = "Выберите пользователя";
-    $("messages").innerHTML = '<div class="empty">Чат удалён из твоего списка.</div>';
-    $("sendForm").classList.add("hidden");
-  }
-  await loadChatList();
-  showSideTab("chats");
 }
 
 async function loadMyProfile() {
@@ -910,14 +860,6 @@ $("tabChats")?.addEventListener("click", () => showSideTab("chats"));
 $("tabPeople")?.addEventListener("click", () => showSideTab("people"));
 
 async function selectUser(user) {
-  // Opening a person from the People tab restores the chat to the Chats tab.
-  if (currentUser?.id && user?.id) {
-    const { error: unhideError } = await db.from("hidden_chats")
-      .delete()
-      .eq("user_id", currentUser.id)
-      .eq("other_user_id", user.id);
-    if (unhideError) console.warn("Unhide chat failed:", unhideError);
-  }
   selectedUser = user;
   clearUnread();
   $("chatHeader").innerHTML = `<div id="chatAvatar" class="avatar avatarUser"></div><span>${escapeHtml(user.username)}</span><button id="keyWarning" type="button" class="keyWarning hidden" title="Ключ безопасности изменился">⚠️</button><button id="fingerprintBtn" type="button" class="fingerprintBtn" title="Проверить отпечаток E2EE">🔐</button>`;
