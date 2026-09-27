@@ -59,3 +59,5 @@ button.secondary{background:#374151}.msg{margin-top:12px;min-height:20px;color:#
 .avatarPreviewImg{width:100%;height:100%;object-fit:cover;display:block}
 
 .avatarPickLabel{display:inline-flex;align-items:center;justify-content:center;cursor:pointer;text-decoration:none;}
+
+.avatarSelectedIcon{font-size:32px;line-height:1}.avatarPickLabel{border:0;}

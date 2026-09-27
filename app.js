@@ -525,6 +525,8 @@ function renderUsers(users) {
 }
 
 async function loadMyProfile() {
+  selectedAvatarFile = null;
+  if ($("avatarInput")) $("avatarInput").value = "";
   const { data } = await db.from("profiles").select("username,avatar_path").eq("id", currentUser.id).maybeSingle();
   const name = data?.username || currentUser.user_metadata?.username || currentUser.email || "";
   $("profileUsername").value = name;
@@ -546,32 +548,28 @@ $("avatarPickBtn").addEventListener("click", () => {
 $("avatarInput").addEventListener("change", e => {
   const file = e.target.files?.[0];
   if (!file) return;
-  selectedAvatarFile = file;
-  if (!file.type.startsWith("image/")) {
+
+  if (!file.type || !file.type.startsWith("image/")) {
     selectedAvatarFile = null;
+    e.target.value = "";
     $("profileMsg").textContent = "Выбери изображение JPG, PNG или WebP.";
     return;
   }
+
   if (file.size > 5 * 1024 * 1024) {
     selectedAvatarFile = null;
+    e.target.value = "";
     $("profileMsg").textContent = "Аватар слишком большой. Максимум 5 МБ.";
     return;
   }
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = () => {
-    $("profileAvatar").innerHTML = "";
-    img.className = "avatarPreviewImg";
-    $("profileAvatar").appendChild(img);
-    URL.revokeObjectURL(url);
-    $("profileMsg").textContent = "Фото выбрано. Нажми «Сохранить».";
-  };
-  img.onerror = () => {
-    URL.revokeObjectURL(url);
-    selectedAvatarFile = null;
-    $("profileMsg").textContent = "Не удалось открыть это изображение.";
-  };
-  img.src = url;
+
+  // ВАЖНО: здесь больше НЕ пытаемся открыть/декодировать картинку.
+  // Android/Samsung Internet иногда ломает локальный preview через blob URL.
+  // Файл сохраняем напрямую и отдаём Supabase при нажатии «Сохранить».
+  selectedAvatarFile = file;
+  const mb = (file.size / 1024 / 1024).toFixed(2);
+  $("profileAvatar").innerHTML = `<div class="avatarSelectedIcon">📷</div>`;
+  $("profileMsg").textContent = `Фото выбрано: ${file.name} (${mb} МБ). Нажми «Сохранить».`;
 });
 
 $("saveProfile").addEventListener("click", async () => {
