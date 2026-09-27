@@ -1,9 +1,5 @@
 const { createClient } = supabase;
 
-if (!window.SUPABASE_URL || window.SUPABASE_URL.includes("YOUR_")) {
-  alert("Сначала создай config.js по образцу config.example.js");
-}
-
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
 const $ = id => document.getElementById(id);
@@ -13,17 +9,20 @@ let realtimeChannel = null;
 let allUsers = [];
 
 async function init() {
-  const { data } = await db.auth.getSession();
+  const { data, error } = await db.auth.getSession();
+  if (error) console.error(error);
   if (data.session) await enterApp(data.session.user);
   else showAuth();
 
-  db.auth.onAuthStateChange(async (event, session) => {
+  db.auth.onAuthStateChange(async (_event, session) => {
     if (session) await enterApp(session.user);
     else showAuth();
   });
 }
 
 function showAuth() {
+  currentUser = null;
+  selectedUser = null;
   $("auth").classList.remove("hidden");
   $("app").classList.add("hidden");
 }
@@ -33,10 +32,12 @@ async function enterApp(user) {
   $("auth").classList.add("hidden");
   $("app").classList.remove("hidden");
 
-  let { data: profile } = await db.from("profiles")
-    .select("username").eq("id", user.id).maybeSingle();
+  const { data: profile } = await db.from("profiles")
+    .select("username")
+    .eq("id", user.id)
+    .maybeSingle();
 
-  $("me").textContent = profile?.username || user.email;
+  $("me").textContent = profile?.username || user.user_metadata?.username || user.email || "";
   await loadUsers();
 }
 
@@ -46,7 +47,12 @@ async function loadUsers() {
     .neq("id", currentUser.id)
     .order("username");
 
-  if (error) return console.error(error);
+  if (error) {
+    console.error(error);
+    $("users").innerHTML = '<div class="muted">Не удалось загрузить пользователей.</div>';
+    return;
+  }
+
   allUsers = data || [];
   renderUsers(allUsers);
 }
@@ -89,6 +95,7 @@ async function loadMessages() {
     $("messages").innerHTML = '<div class="empty">Ошибка загрузки сообщений.</div>';
     return;
   }
+
   renderMessages(data || []);
 }
 
@@ -98,31 +105,12 @@ function renderMessages(messages) {
     $("messages").innerHTML = '<div class="empty">Сообщений пока нет. Напиши первым.</div>';
     return;
   }
-  for (const m of messages) {
-    const div = document.createElement("div");
-    div.className = "bubble" + (m.sender_id === currentUser.id ? " mine" : "");
-    div.innerHTML = `${escapeHtml(m.body)}<div class="time">${new Date(m.created_at).toLocaleString()}</div>`;
-    $("messages").appendChild(div);
-  }
+
+  for (const m of messages) appendMessage(m, false);
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
-function subscribeToMessages() {
-  if (realtimeChannel) db.removeChannel(realtimeChannel);
-
-  realtimeChannel = db.channel("messages-" + selectedUser.id)
-    .on("postgres_changes", {
-      event: "INSERT",
-      schema: "public",
-      table: "messages",
-      filter: `sender_id=eq.${selectedUser.id}`
-    }, payload => {
-      if (payload.new.receiver_id === currentUser.id) appendMessage(payload.new);
-    })
-    .subscribe();
-}
-
-function appendMessage(m) {
+function appendMessage(m, scroll = true) {
   const empty = $("messages").querySelector(".empty");
   if (empty) $("messages").innerHTML = "";
 
@@ -130,34 +118,51 @@ function appendMessage(m) {
   div.className = "bubble" + (m.sender_id === currentUser.id ? " mine" : "");
   div.innerHTML = `${escapeHtml(m.body)}<div class="time">${new Date(m.created_at).toLocaleString()}</div>`;
   $("messages").appendChild(div);
-  $("messages").scrollTop = $("messages").scrollHeight;
+
+  if (scroll) $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function subscribeToMessages() {
+  if (realtimeChannel) db.removeChannel(realtimeChannel);
+
+  realtimeChannel = db.channel("messages-" + selectedUser.id + "-" + currentUser.id)
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "messages"
+    }, payload => {
+      const m = payload.new;
+      const isThisChat =
+        (m.sender_id === currentUser.id && m.receiver_id === selectedUser.id) ||
+        (m.sender_id === selectedUser.id && m.receiver_id === currentUser.id);
+
+      if (isThisChat && m.sender_id !== currentUser.id) appendMessage(m);
+    })
+    .subscribe();
 }
 
 $("sendForm").addEventListener("submit", async e => {
   e.preventDefault();
+
   const body = $("messageInput").value.trim();
   if (!body || !selectedUser) return;
 
   $("messageInput").value = "";
 
-  const { error } = await db.from("messages").insert({
+  const { data, error } = await db.from("messages").insert({
     sender_id: currentUser.id,
     receiver_id: selectedUser.id,
     body
-  });
+  }).select().single();
 
   if (error) {
     console.error(error);
     alert("Не удалось отправить сообщение.");
     $("messageInput").value = body;
-  } else {
-    appendMessage({
-      sender_id: currentUser.id,
-      receiver_id: selectedUser.id,
-      body,
-      created_at: new Date().toISOString()
-    });
+    return;
   }
+
+  appendMessage(data);
 });
 
 $("signup").onclick = async () => {
@@ -165,46 +170,70 @@ $("signup").onclick = async () => {
   const password = $("password").value;
   const username = $("username").value.trim();
 
+  $("authMsg").textContent = "";
+
   if (!email || !password || !username) {
     $("authMsg").textContent = "Заполни email, пароль и имя.";
     return;
   }
 
-  if (username.length < 3) {
-    $("authMsg").textContent = "Имя должно содержать минимум 3 символа.";
+  if (username.length < 3 || username.length > 30) {
+    $("authMsg").textContent = "Имя должно содержать от 3 до 30 символов.";
     return;
   }
 
-  const { data, error } = await db.auth.signUp({ email, password });
+  if (password.length < 6) {
+    $("authMsg").textContent = "Пароль должен содержать минимум 6 символов.";
+    return;
+  }
+
+  const { data, error } = await db.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { username }
+    }
+  });
 
   if (error) {
-    $("authMsg").textContent = error.message;
+    $("authMsg").textContent = translateAuthError(error.message);
     return;
   }
 
-  if (data.user) {
-    const { error: pError } = await db.from("profiles").insert({
-      id: data.user.id,
-      username
-    });
-
-    if (pError) console.error(pError);
+  if (data.session) {
+    $("authMsg").textContent = "Регистрация успешна.";
+    return;
   }
 
-  $("authMsg").textContent = "Регистрация выполнена. Если включено подтверждение email — проверь почту.";
+  $("authMsg").textContent =
+    "Аккаунт создан. Если в Supabase включено подтверждение email — проверь почту и подтверди адрес, затем войди.";
 };
 
 $("login").onclick = async () => {
   const email = $("email").value.trim();
   const password = $("password").value;
 
+  if (!email || !password) {
+    $("authMsg").textContent = "Введи email и пароль.";
+    return;
+  }
+
   const { error } = await db.auth.signInWithPassword({ email, password });
-  if (error) $("authMsg").textContent = error.message;
+  if (error) $("authMsg").textContent = translateAuthError(error.message);
 };
 
 $("logout").onclick = async () => {
   await db.auth.signOut();
 };
+
+function translateAuthError(message) {
+  const m = String(message).toLowerCase();
+  if (m.includes("invalid login credentials")) return "Неверный email или пароль.";
+  if (m.includes("user already registered")) return "Этот email уже зарегистрирован. Нажми «Войти».";
+  if (m.includes("email not confirmed")) return "Email ещё не подтверждён. Проверь почту.";
+  if (m.includes("password")) return "Пароль не подходит. Проверь его и попробуй снова.";
+  return message;
+}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({
