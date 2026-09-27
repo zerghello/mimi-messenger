@@ -61,3 +61,5 @@ button.secondary{background:#374151}.msg{margin-top:12px;min-height:20px;color:#
 .avatarPickLabel{display:inline-flex;align-items:center;justify-content:center;cursor:pointer;text-decoration:none;}
 
 .avatarSelectedIcon{font-size:32px;line-height:1}.avatarPickLabel{border:0;}
+
+.debugStatus{font-size:11px;line-height:1.25;padding:5px 10px;word-break:break-word;opacity:.8}.usersError{word-break:break-word}

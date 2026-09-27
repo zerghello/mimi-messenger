@@ -9,7 +9,12 @@ const RECOVERY_LINK_AT_LOAD = (() => {
 
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
+const APP_VERSION = "5.6.4";
 const $ = id => document.getElementById(id);
+function setDebugStatus(message) {
+  const el = $("debugStatus");
+  if (el) el.textContent = `MiMi Messenger v${APP_VERSION} • ${message}`;
+}
 let currentUser = null;
 let selectedUser = null;
 let realtimeChannel = null;
@@ -464,6 +469,7 @@ function showAuth() {
 
 async function enterApp(user) {
   currentUser = user;
+  setDebugStatus("авторизация OK • загружаю пользователей...");
   $("auth").classList.add("hidden"); $("app").classList.remove("hidden");
 
   // ВАЖНО: E2EE больше НЕ блокирует запуск списка пользователей.
@@ -493,19 +499,20 @@ async function enterApp(user) {
 
 async function loadUsers() {
   if (!currentUser?.id) {
+    setDebugStatus("нет авторизованного пользователя");
     $("users").innerHTML = '<div class="muted">Пользователь не авторизован.</div>';
     return;
   }
 
-  // Сначала берём минимальный набор полей, чтобы E2EE/аватар никогда не
-  // мог заблокировать сам список пользователей.
+  setDebugStatus("запрос profiles...");
+
+  // Сначала минимальный запрос. Он не зависит от E2EE и аватаров.
   let result = await db.from("profiles")
     .select("id,username,created_at,avatar_path,e2ee_public_key")
     .order("username");
 
-  // Запасной запрос на случай временной ошибки схемы/кэша Supabase.
   if (result.error) {
-    console.warn("Full profiles query failed, retrying minimal query:", result.error);
+    console.warn("Profiles full query failed, retrying minimal:", result.error);
     result = await db.from("profiles")
       .select("id,username,created_at,avatar_path")
       .order("username");
@@ -513,13 +520,14 @@ async function loadUsers() {
 
   if (result.error) {
     console.error("Profiles query failed:", result.error);
-    $("users").innerHTML = `<div class="muted usersError">Не удалось загрузить пользователей.<br><small>${escapeHtml(result.error.message || "Ошибка Supabase")}</small></div>`;
+    setDebugStatus("ОШИБКА profiles: " + (result.error.message || "Supabase error"));
+    $("users").innerHTML = `<div class="muted usersError">Ошибка загрузки пользователей.<br><small>${escapeHtml(result.error.message || "Ошибка Supabase")}</small></div>`;
     return;
   }
 
-  // Исключаем текущего пользователя уже после получения данных.
-  // Это надёжнее и одновременно показывает, что Supabase реально вернул.
-  allUsers = (result.data || []).filter(u => u.id !== currentUser.id);
+  const rows = result.data || [];
+  allUsers = rows.filter(u => u.id !== currentUser.id);
+  setDebugStatus(`Supabase вернул ${rows.length}; других пользователей: ${allUsers.length}`);
   renderUsers(allUsers);
 
   if (!allUsers.length) {
