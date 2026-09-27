@@ -7,6 +7,8 @@ let currentUser = null;
 let selectedUser = null;
 let realtimeChannel = null;
 let allUsers = [];
+let selectedPhoto = null;
+const PHOTO_BUCKET = "chat-images";
 
 let notificationPermission = (typeof Notification !== "undefined") ? Notification.permission : "unsupported";
 let unreadTotal = 0;
@@ -92,7 +94,7 @@ function showIncomingNotification(m) {
     const senderName = allUsers.find(u => u.id === m.sender_id)?.username || "Новое сообщение";
     try {
       const n = new Notification("MiMi Messenger — " + senderName, {
-        body: m.body,
+        body: m.image_path ? "📷 Фото" : m.body,
         tag: "mimi-" + m.sender_id,
         renotify: true
       });
@@ -198,7 +200,7 @@ async function loadMessages() {
   $("messages").innerHTML = '<div class="empty">Загрузка...</div>';
 
   const { data, error } = await db.from("messages")
-    .select("id,sender_id,receiver_id,body,created_at")
+    .select("id,sender_id,receiver_id,body,image_path,created_at")
     .or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${selectedUser.id}),and(sender_id.eq.${selectedUser.id},receiver_id.eq.${currentUser.id})`)
     .order("created_at", { ascending: true });
 
@@ -211,26 +213,142 @@ async function loadMessages() {
   renderMessages(data || []);
 }
 
-function renderMessages(messages) {
+
+function escapeAttr(s) {
+  return String(s).replace(/["&<>]/g, c => ({
+    '"': '&quot;', '&': '&amp;', '<': '&lt;', '>': '&gt;'
+  }[c]));
+}
+
+async function getImageUrl(path) {
+  if (!path) return null;
+  const { data, error } = await db.storage
+    .from(PHOTO_BUCKET)
+    .createSignedUrl(path, 60 * 60);
+  if (error) {
+    console.error("Image URL error:", error);
+    return null;
+  }
+  return data?.signedUrl || null;
+}
+
+async function uploadPhoto(file) {
+  if (!file || !currentUser) return null;
+  if (!file.type.startsWith("image/")) {
+    alert("Можно отправлять только изображения.");
+    return null;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    alert("Фото слишком большое. Максимум 10 МБ.");
+    return null;
+  }
+
+  const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+  const path = `${currentUser.id}/${crypto.randomUUID()}.${ext}`;
+
+  const { error } = await db.storage.from(PHOTO_BUCKET).upload(path, file, {
+    contentType: file.type,
+    upsert: false
+  });
+
+  if (error) {
+    console.error("Photo upload error:", error);
+    alert("Не удалось загрузить фото. Проверь Storage и политики Supabase.");
+    return null;
+  }
+  return path;
+}
+
+function showPhotoPreview(file) {
+  removePhotoPreview();
+  if (!file) return;
+
+  const wrap = document.createElement("div");
+  wrap.id = "photoPreview";
+  wrap.className = "photoPreview";
+
+  const img = document.createElement("img");
+  img.src = URL.createObjectURL(file);
+  img.alt = "Предпросмотр";
+
+  const name = document.createElement("span");
+  name.textContent = file.name;
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "✕";
+  remove.onclick = () => {
+    $("photoInput").value = "";
+    selectedPhoto = null;
+    removePhotoPreview();
+  };
+
+  wrap.append(img, name, remove);
+  $("sendForm").before(wrap);
+}
+
+function removePhotoPreview() {
+  $("photoPreview")?.remove();
+}
+
+async function appendImageMessage(m, container, scroll) {
+  const url = await getImageUrl(m.image_path);
+  if (!url) {
+    const err = document.createElement("div");
+    err.className = "imageCaption";
+    err.textContent = "Не удалось загрузить фото.";
+    container.appendChild(err);
+    return;
+  }
+
+  const img = document.createElement("img");
+  img.className = "messageImage";
+  img.src = url;
+  img.alt = "Фото";
+  img.loading = "lazy";
+  img.onclick = () => window.open(url, "_blank", "noopener,noreferrer");
+  container.appendChild(img);
+
+  if (m.body) {
+    const caption = document.createElement("div");
+    caption.className = "imageCaption";
+    caption.textContent = m.body;
+    container.appendChild(caption);
+  }
+  if (scroll) $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+async function renderMessages(messages) {
   $("messages").innerHTML = "";
   if (!messages.length) {
     $("messages").innerHTML = '<div class="empty">Сообщений пока нет. Напиши первым.</div>';
     return;
   }
 
-  for (const m of messages) appendMessage(m, false);
+  for (const m of messages) await appendMessage(m, false);
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
-function appendMessage(m, scroll = true) {
+async function appendMessage(m, scroll = true) {
   const empty = $("messages").querySelector(".empty");
   if (empty) $("messages").innerHTML = "";
 
   const div = document.createElement("div");
   div.className = "bubble" + (m.sender_id === currentUser.id ? " mine" : "");
-  div.innerHTML = `${escapeHtml(m.body)}<div class="time">${new Date(m.created_at).toLocaleString()}</div>`;
-  $("messages").appendChild(div);
 
+  if (m.image_path) {
+    div.classList.add("imageBubble");
+    await appendImageMessage(m, div, false);
+  } else {
+    div.appendChild(document.createTextNode(m.body || ""));
+  }
+
+  const time = document.createElement("div");
+  time.className = "time";
+  time.textContent = new Date(m.created_at).toLocaleString();
+  div.appendChild(time);
+
+  $("messages").appendChild(div);
   if (scroll) $("messages").scrollTop = $("messages").scrollHeight;
 }
 
@@ -260,26 +378,58 @@ function subscribeToMessages() {
 
 $("sendForm").addEventListener("submit", async e => {
   e.preventDefault();
+  if (!selectedUser) return;
 
   const body = $("messageInput").value.trim();
-  if (!body || !selectedUser) return;
+  const file = selectedPhoto;
 
-  $("messageInput").value = "";
+  if (!body && !file) return;
 
-  const { data, error } = await db.from("messages").insert({
-    sender_id: currentUser.id,
-    receiver_id: selectedUser.id,
-    body
-  }).select().single();
+  const submitBtn = $("sendForm").querySelector('button[type="submit"]');
+  submitBtn.disabled = true;
 
-  if (error) {
-    console.error(error);
-    alert("Не удалось отправить сообщение.");
-    $("messageInput").value = body;
-    return;
+  try {
+    let image_path = null;
+
+    if (file) {
+      image_path = await uploadPhoto(file);
+      if (!image_path) return;
+    }
+
+    $("messageInput").value = "";
+    selectedPhoto = null;
+    $("photoInput").value = "";
+    removePhotoPreview();
+
+    const { data, error } = await db.from("messages").insert({
+      sender_id: currentUser.id,
+      receiver_id: selectedUser.id,
+      body: body || "",
+      image_path
+    }).select().single();
+
+    if (error) {
+      console.error(error);
+      alert("Не удалось отправить сообщение.");
+      $("messageInput").value = body;
+      if (image_path) {
+        await db.storage.from(PHOTO_BUCKET).remove([image_path]);
+      }
+      return;
+    }
+
+    await appendMessage(data);
+  } finally {
+    submitBtn.disabled = false;
   }
+});
 
-  appendMessage(data);
+$("photoBtn").addEventListener("click", () => $("photoInput").click());
+
+$("photoInput").addEventListener("change", e => {
+  const file = e.target.files?.[0] || null;
+  selectedPhoto = file;
+  showPhotoPreview(file);
 });
 
 $("signup").onclick = async () => {
