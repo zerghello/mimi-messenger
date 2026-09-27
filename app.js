@@ -465,15 +465,26 @@ function showAuth() {
 async function enterApp(user) {
   currentUser = user;
   $("auth").classList.add("hidden"); $("app").classList.remove("hidden");
+
+  // ВАЖНО: E2EE больше НЕ блокирует запуск списка пользователей.
+  // Если регистрация/проверка устройства временно не удалась, чат всё равно
+  // должен показать остальных пользователей. E2EE будет повторно инициализирован
+  // при первой отправке сообщения.
+  ensureIdentity().then(() => ensureDevice()).catch(e => {
+    console.warn("E2EE init deferred:", e);
+  });
+
+  let profile = null;
   try {
-    await ensureIdentity();
-    await ensureDevice();
+    const result = await db.from("profiles")
+      .select("username,e2ee_public_key,avatar_path")
+      .eq("id", user.id).maybeSingle();
+    if (result.error) console.warn("My profile load failed:", result.error);
+    profile = result.data || null;
   } catch (e) {
-    console.error(e);
-    alert("Не удалось включить E2EE: " + e.message);
-    return;
+    console.warn("My profile load exception:", e);
   }
-  const { data: profile } = await db.from("profiles").select("username,e2ee_public_key,avatar_path").eq("id", user.id).maybeSingle();
+
   const myName = profile?.username || user.user_metadata?.username || user.email || "";
   $("me").textContent = myName;
   setAvatarElement($("myAvatar"), myName, profile?.avatar_path);
@@ -481,11 +492,39 @@ async function enterApp(user) {
 }
 
 async function loadUsers() {
-  const { data, error } = await db.from("profiles")
-    .select("id,username,created_at,e2ee_public_key,avatar_path")
-    .neq("id", currentUser.id).order("username");
-  if (error) { console.error(error); $("users").innerHTML = '<div class="muted">Не удалось загрузить пользователей.</div>'; return; }
-  allUsers = data || []; renderUsers(allUsers);
+  if (!currentUser?.id) {
+    $("users").innerHTML = '<div class="muted">Пользователь не авторизован.</div>';
+    return;
+  }
+
+  // Сначала берём минимальный набор полей, чтобы E2EE/аватар никогда не
+  // мог заблокировать сам список пользователей.
+  let result = await db.from("profiles")
+    .select("id,username,created_at,avatar_path,e2ee_public_key")
+    .order("username");
+
+  // Запасной запрос на случай временной ошибки схемы/кэша Supabase.
+  if (result.error) {
+    console.warn("Full profiles query failed, retrying minimal query:", result.error);
+    result = await db.from("profiles")
+      .select("id,username,created_at,avatar_path")
+      .order("username");
+  }
+
+  if (result.error) {
+    console.error("Profiles query failed:", result.error);
+    $("users").innerHTML = `<div class="muted usersError">Не удалось загрузить пользователей.<br><small>${escapeHtml(result.error.message || "Ошибка Supabase")}</small></div>`;
+    return;
+  }
+
+  // Исключаем текущего пользователя уже после получения данных.
+  // Это надёжнее и одновременно показывает, что Supabase реально вернул.
+  allUsers = (result.data || []).filter(u => u.id !== currentUser.id);
+  renderUsers(allUsers);
+
+  if (!allUsers.length) {
+    $("users").innerHTML = '<div class="muted">Других пользователей пока нет.</div>';
+  }
 }
 
 function initials(name) {
