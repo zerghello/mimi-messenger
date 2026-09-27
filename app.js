@@ -9,7 +9,7 @@ const RECOVERY_LINK_AT_LOAD = (() => {
 
 const db = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
-const APP_VERSION = "5.6.4";
+const APP_VERSION = "5.6.5";
 const $ = id => document.getElementById(id);
 function setDebugStatus(message) {
   const el = $("debugStatus");
